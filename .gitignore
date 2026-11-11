@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+
+# Generated during the peer review: never committed
+data/output/
+
+# Local notes / drafts
+*.tmp

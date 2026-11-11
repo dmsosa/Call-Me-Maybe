@@ -1,0 +1,51 @@
+[project]
+name = "cmm"
+version = "0.1.0"
+description = "Call Me Maybe - constrained function calling with a small LLM"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "llm-sdk",
+    "numpy>=2.2.6",
+    "pydantic>=2.14.3",
+    # Direct dependency so the CPU-only index below also applies to the
+    # transitive dependency pulled in by llm-sdk.
+    "torch",
+]
+
+# The project itself is not a package: `uv run python -m src` uses ./src.
+[tool.uv]
+package = false
+
+# CPU-only torch: this project runs on the CPU and the CUDA wheels are ~3 GB.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+llm-sdk = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    "llm_sdk",
+]
+
+[tool.mypy]
+exclude = ["^\\.venv/", "^llm_sdk/"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "flake8>=7.4.1",
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
