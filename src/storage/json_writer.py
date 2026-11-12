@@ -1,3 +1,4 @@
+from enum import Enum, auto
 import json
 from pathlib import Path
 from typing import Any
@@ -5,8 +6,14 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..exception.exception import OutputError, format_schema_error
-from .schema import OutputList
+from ..model.schema import OutputList
 
+
+class WritingState(Enum):
+    PROMPT = auto(),
+    FUNCTION_NAME = auto(),
+    FUNCTION_PARAMS = auto(),
+    FINISH = auto()
 
 class JsonWriter(BaseModel):
     """
@@ -18,8 +25,11 @@ class JsonWriter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     output_path: Path
-    output_payload: OutputList
-
+    output_payload: OutputList = []
+    state: WritingState = WritingState.PROMPT
+    function_call: dict = {}
+    function_call_ready: bool = False
+ 
     def set_output_payload(self, payload: Any) -> None:
         """
         Replace the payload and pass schema validations

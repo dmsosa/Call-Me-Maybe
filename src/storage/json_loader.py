@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field, RootModel, ValidationError, model_validator
 
 from src.exception.exception import InputError, format_schema_error
-from src.storage.schema import FnDefinition, PromptDefinition
+from src.model.schema import FnDefinition, PromptDefinition
 
 class FunctionStorage(RootModel[list[FnDefinition]]):
 	"""

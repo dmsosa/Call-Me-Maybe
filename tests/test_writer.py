@@ -93,7 +93,7 @@ def test_unwritable_destination_raises_output_error(tmp_path: Path) -> None:
     blocker.write_text("", encoding="utf-8")
     out = blocker / "results.json"  # parent = un fichier, pas un dossier
     writer = JsonWriter(output_path=out, output_payload=make_results())
-    with pytest.raises(OutputError, match="impossible d'écrire"):
+    with pytest.raises(OutputError, match="results.json"):
         writer.export_json()
 
 
