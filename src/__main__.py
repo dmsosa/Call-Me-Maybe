@@ -3,10 +3,11 @@ from pathlib import Path
 import sys
 import time
 
+from src.core.utils import fmt_time
 from src.exception.exception import InputError
 from src.storage.json_writer import JsonWriter
 from .storage.json_loader import load_prompts, \
-    load_fn_storage
+    load_function_list
 
 LLM_SDK_AVAILABLE = True
 
@@ -41,37 +42,51 @@ def main(argv: list[str] | None = None) -> int:
     als Ergebniss gibt?
     """
     args = init_argparse(argv)
+    print("Loading input files...")
     try:
-        fn_storage = load_fn_storage(args.functions_definition)
-        prompts = load_prompts(args.input)
+        fn_list = load_function_list(args.functions_definition)
+        prompt_list = load_prompts(args.input)
     except InputError as e:
         print(f"Error: {e}", file=sys.stderr)
         return (1)
 
+    print(f"    {len(fn_list.root)} functions loaded successfully...")
+    print(f"    {len(prompt_list.root)} prompts loaded successfully...")
 
     try:
+        print(f"\nLoading LLM Model...")
         start = time.time()
  
         from llm_sdk import Small_LLM_Model
-        from src.core.tokenizer import Generator
+        from src.core.llm import LargeLanguageModel
+        from src.core.generator import Generator
 
-        gen = Generator(
-            fn_storage=fn_storage,
-            prompts=prompts,
-            writer=JsonWriter(output_path=Path(args.output))
-        )
         model = Small_LLM_Model()
-    
+        llm = LargeLanguageModel(model=model)
+
     except Exception as e:
         print(f"Error: could not load the model: {e}", file=sys.stderr)
         return 1
-    print(f"model ready in {fmt_time(time.time() - start)}",
+    
+    print(f"    model loaded in {fmt_time(time.time() - start)}",
           file=sys.stderr)
+    
     # In this phase, once the model is loaded,
     # Start generating JSON for each prompt
-    for prompt in prompts.root:
-        json = gen.generate_json(model, prompt.prompt)
-        print(json)
+    lang_generator = Generator(
+            llm=llm,
+            fn_list=fn_list.root,
+            prompts=prompt_list.root,
+            writer=JsonWriter(output_path=Path(args.output))
+        )
+    lang_generator.run()
+    print(f"\n{'='*50}")
+    print(f"Completed: {len(lang_generator.results)} successes, {lang_generator.errors} errors")
+    print(f"Results in: {args.output}")
+    print(f"done in {fmt_time(time.time() - start)} -> {args.output}",
+          file=sys.stderr)
+
+
     return (0)
 
 if __name__ == "__main__":

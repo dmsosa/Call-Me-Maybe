@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..exception.exception import OutputError, format_schema_error
-from ..model.schema import OutputList
+from ..model.schema import FunctionCall, OutputList
 
 
 class WritingState(Enum):
@@ -25,24 +25,8 @@ class JsonWriter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     output_path: Path
-    output_payload: OutputList = []
-    state: WritingState = WritingState.PROMPT
-    function_call: dict = {}
-    function_call_ready: bool = False
- 
-    def set_output_payload(self, payload: Any) -> None:
-        """
-        Replace the payload and pass schema validations
-        raising error if not valid schema
-        """
-        try:
-            self.output_payload = OutputList(payload)
-        except ValidationError as exc:
-            raise OutputError(
-                format_schema_error(exc, self.output_path)
-            )
 
-    def export_json(self) -> Path:
+    def export_json(self, function_call_list: list[FunctionCall]) -> None:
         """
         Writes the output file, raises error in case it is not
         possible to write the file because any of the following
@@ -55,7 +39,7 @@ class JsonWriter(BaseModel):
         try:
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
             payload = json.dumps(
-                self.output_payload.model_dump(),
+                [call.model_dump() for call in function_call_list],
                 indent=2,
                 ensure_ascii=False,
             )
@@ -64,4 +48,3 @@ class JsonWriter(BaseModel):
             raise OutputError(
                 f"Is not possible to write output json file {self.output_path} : {exc.strerror}"
             )
-        return self.output_path

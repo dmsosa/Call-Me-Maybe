@@ -1,35 +1,30 @@
-from dataclasses import dataclass
-from enum import Enum, auto
 import json
 from pathlib import Path
 from typing import Any
-from pydantic import BaseModel, Field, RootModel, ValidationError, model_validator
-
+from pydantic import RootModel, ValidationError, model_validator
 from src.exception.exception import InputError, format_schema_error
 from src.model.schema import FnDefinition, PromptDefinition
 
-class FunctionStorage(RootModel[list[FnDefinition]]):
+
+class FunctionList(RootModel[list[FnDefinition]]):
 	"""
 	Will read the JSON input files (a list of Function Definitions)
 	this will also store prompts within the same class.
 	"""
 
 	@model_validator(mode="after")
-	def _duplicated_names(self) -> "FunctionStorage":
+	def _duplicated_names(self) -> "FunctionList":
 		seen: set[str] = set()
 		for fn in self.root:
 			if fn.name in seen:
 				raise ValueError(f"duplicated name of function : {fn.name}")
 			seen.add(fn.name)
 		return self
+	
 
-	@property
-	def by_name(self) -> dict[str, FnDefinition]:
-		return {fn.name: fn for fn in self.root}
-
-class PromptStorage(RootModel[list[PromptDefinition]]):
+class PromptList(RootModel[list[PromptDefinition]]):
 	@model_validator(mode="after")
-	def _non_empty(self) -> "PromptStorage":
+	def _non_empty(self) -> "PromptList":
 		for i, prompt in enumerate(self.root):
 			if not prompt.prompt.strip():
 				raise ValueError(f"prompt number {i + 1} is empty")
@@ -64,71 +59,23 @@ def _read_json_from_path(path_str: str) -> Any:
 		) from None
 
 
-
-
-
-def load_fn_storage(path_str: str) -> FunctionStorage:
+def load_function_list(path_str: str) -> FunctionList:
 	json_content = _read_json_from_path(path_str)
 	try:
-		storage = FunctionStorage(json_content)
-		return storage
+		list = FunctionList(json_content)
+		return list
 	except ValidationError as e:
 		raise InputError(format_schema_error(e, path_str)) from None
 	except Exception as e:
 		raise InputError(f"Unexpected exception raised while creating Function Storage: \n{e}\n")
 
 
-def load_prompts(path_str: str) -> PromptStorage:
+def load_prompts(path_str: str) -> PromptList:
 	json_content = _read_json_from_path(path_str)
 	try:
-		storage = PromptStorage(json_content)
-		return storage
+		list = PromptList(json_content)
+		return list
 	except ValidationError as e:
 		raise InputError(format_schema_error(e, path_str)) from None
 	except Exception as e:
 		raise InputError(f"Unexpected exception raised while creating Function Storage: \n{e}\n")
-
-
-# def read_functions(self, path: str) -> None:
-# 	try:
-# 		with open(path, 'r') as f:
-# 			json_content = json.load(f)
-# 	except (FileNotFoundError, PermissionError, IOError) as e:
-# 		raise e
-# 	except json.JSONDecodeError as e:
-# 		raise e
-# 	except Exception as e:
-# 		raise e
-
-# 	for fn in json_content:
-# 		fn_def = FnDefinition(**fn)
-# 		self.fn_to_def[fn_def.name] = fn_def
-
-# 	self._check_dup_names()
-
-# def read_prompts(self, content: str) -> None:
-# 	try:
-# 		json_content = json.load(content)
-# 	except json.JSONDecodeError as e:
-# 		raise e
-# 	except json.JSONDecodeError as e:
-# 		raise e
-
-# 	for line, json_object in enumerate(json_content):
-# 		prompt = json_object.get("prompt", "")
-# 		if (len(prompt) < 1):
-# 			raise Exception(f"Invalid prompt file, empty prompt in line {line + 1}")
-# 		self.prompts.append(prompt)
-
-# 	self.prompts = result
-
-# def _find_duplicates(self, json_content) -> list[str]:
-# 	"""Return names that appear more than once."""
-# 	seen: set[str] = set()
-# 	dupes: list[str] = []
-# 	for fn_name in self.fn_to_def.keys():
-# 		if fn_name in seen:
-# 			dupes.append(fn_name)
-# 		else:
-# 			seen.add(fn_name)
-# 	return dupes

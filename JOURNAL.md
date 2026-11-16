@@ -61,3 +61,64 @@ Voici ca que les autres ont fait dans ces programmes, avec mes mots:
 - Pour cheque prompt, creer une FunctionCall
 - Ajoute le FunctionCall sur le result
 - Ecrir le result
+
+# Chapitre Trois
+
+J'ai essayer de faire un echose, alors une fois le prompt est pret pour commencer a trouver le nom du fonctionne, qu'est ce que ce passe?
+
+On fait, ca n'est pas mieux, mais et plus directe demander le nome du fonctionne selon la premier lettre du nome
+
+Le object Vocab est tres important, car il est un conteneteur pour les masks que on apliquerait sur les logits. 
+
+Comment constroire une Vocab?
+
+Le Vocab plus simple a seulement les ids et les text du cheque token, et a la inverse aussi: donc:
+
+Vocab:
+
+self.tokens_to_ids = json.loads(get_path_to_logits().content())
+self.ids_to_tokens = { v: k for k, v in self.tokens_to_ids}
+
+donc on peux chercher les characters que aparraint dans cheque item du dict.
+
+search_chars
+
+returns all the positions where token contains any of the characters.
+returns positions where token contains all of characters.
+returns positions where token is exactly this character.
+
+I want to:
+
+Put false where the token ids does not match the JSON_CHUNK_REGEXP:
+
+that is, it is not a valid string value for JSON, it is, it is an ecaped sequence. So all the valid JSON strings are normal characters or full escaped sequences...
+
+Qu'est que je deux faire aujourd'hui?
+Ca serait tres cool de avoir le fly-in delivere, et pouvoir faire le progres avec Call Me Maybe, mais pour moi c'est plus attractiv faire le progress avec mon LLM projet, d'une facon que je peux aussi apprendre quelque chose sur le RAG, si possible.
+
+Je ne parle pas meme resolvre le projet, mais APPRENDRE seulement une chose bien de ce projet, pour pouvoir le controir petit a petit.
+
+On ce moment, l'objectif est d'obtenir une file JSON en sortie qui est ecrit d'une facon valide.
+
+Alors, je connais bien deux manieres de faire cette generation du json, l'une avec une machine a etat (finit state machine), et l'autre par contre genere un objet FunctionCall directement, je prefere generer du texte json, puisque on doit faire ca toujours et permettre a ma function de faire une seule chose.
+
+Donc, une autre fonction validera ce json et construira l'objet fonctino, se necessaire
+
+Comment puis-je utiliser un machine a etat dans ma solution?
+
+La machine doit faire une chose selon son etat actuel, elle commence par prendre le nom de la fonciton a creer:
+
+FSM.State = FN_NAME
+ajoute le base_context_ids, puis le nom de la fonction
+se aucun eche n'est survenu, elle passe a l'etat suivant
+
+FMS.State = FN_PARAMS
+ajouter le nom du parametre actuel a data_str
+combiner les previous_ids avec cette nouvelle data a dedus
+trouver le value pour ce parametre, a l'aide des fonctions generate_string() ou generate_number()
+selon son type, ajouter la valeur en tant que string a data_str
+S'il n'y a plus de parametres, change l'etat en FMS.State = FINISH
+Sinon, continue avec le parametre suivant, changer le parametre_index
+
+Objectif: ajouter
+

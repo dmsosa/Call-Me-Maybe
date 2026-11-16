@@ -1,2 +1,2 @@
-from .json_loader import FunctionStorage, \
-						PromptStorage
+from .json_loader import FunctionList, \
+						PromptList
