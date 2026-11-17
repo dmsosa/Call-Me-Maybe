@@ -2,7 +2,7 @@ import json
 from typing import Any
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, Field, ValidationError, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict
 
 
 # Characters that may follow a backslash inside a JSON string
@@ -41,6 +41,9 @@ class Vocab(BaseModel):
     str_valid: list[npt.NDArray[np.bool_]] | None = Field(default=None, exclude=True)
     str_closed: list[npt.NDArray[np.int32]] | None = Field(default=None, exclude=True)
     str_escaped: list[npt.NDArray[np.bool_]] | None = Field(default=None, exclude=True)
+    quote_id: int = Field(default=0, exclude=True)
+    true_id: int = Field(default=0, exclude=True)
+    false_id: int = Field(default=0, exclude=True)
 
     def model_post_init(self, context) -> None:
         try:
@@ -49,11 +52,17 @@ class Vocab(BaseModel):
                 # of tokens
                 raw: dict[str, int] = json.load(f)
         except (FileNotFoundError, IOError, PermissionError, json.JSONDecodeError) as e:
-            raise ValidationError(f"Error creating the Vocab, bad path_to_vocab str: \n{e}")
+            raise ValueError(f"Error creating the Vocab, bad path_to_vocab str: \n{e}")
         # one throwaway call just to learn the logits size (151936)
         char_to_byte: dict[str, int] = self._build_char_to_byte()
-        self._build_ids_to_tokens(raw, char_to_byte)
+        self._build_mappings(raw, char_to_byte)
         self._build_masks()
+
+        # Token ids we need to refer to directly. encode returns a
+        # list, [0] takes its first (here: only) id.
+        self.quote_id = self.tokens_to_ids.get('"', 1) # 1 is the real id of double-quote (see vocab.json xd)
+        self.true_id = self.tokens_to_ids.get('true', 1866) # 1866 is the real id of true (see vocab.json)
+        self.false_id = self.tokens_to_ids.get('false', 3849) # 3576 is the real id of false (see vocab.json)
 
     def _build_char_to_byte(self) -> dict[str, int]:
         """
@@ -94,22 +103,28 @@ class Vocab(BaseModel):
         # Result: a table of the form 
         return table
 
-    def _build_ids_to_tokens(self, raw_logits: dict[str, Any], char_to_byte: dict[str, int]) -> None:
-        for token, idx in raw_logits.items():
-            if idx < self.n_logits:
+    def _build_mappings(self, raw_logits: dict[str, Any], char_to_byte: dict[str, int]) -> None:
+        for token, id in raw_logits.items():
+            if id < self.n_logits:
                 char_bytes_values = []
                 for char in token:
                     char_bytes_values.append(char_to_byte.get(char, 0))
+                
                 # # From string
                 # b1 = bytes("Hello", "utf-8")  # b'Hello'
 
                 # # From integers
-                # b2 = bytes([72, 101, 108, 108, 111])  # b'Hello'
+                # b2 = bytes([32, 72, 101, 108, 108, 111])  # b' Hello'
 
                 # # From size (null bytes)
                 # b3 = bytes(3)  # b'\x00\x00\x00'
-                data = bytes(char_bytes_values)
-                self.ids_to_tokens[idx] = data.decode("utf-8", errors="replace")
+                word_in_bytes = bytes(char_bytes_values)
+                decoded_bytes =  word_in_bytes.decode("utf-8", errors="replace")
+                
+                # this is map ids to token
+                self.ids_to_tokens[id] = decoded_bytes
+                # this is map tokens to ids.
+                self.tokens_to_ids[decoded_bytes] = id
 
     def _build_masks(self) -> None:
 

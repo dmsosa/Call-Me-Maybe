@@ -8,6 +8,7 @@ from src.core.constrained_decoder import ConstrainedDecoder
 from src.core.llm import LargeLanguageModel
 from src.core.utils import fmt_time
 from src.core.vocab import Vocab
+from src.exception.exception import OutputError
 from src.model.schema import FnDefinition, FunctionCall, PromptDefinition, value_matches
 from src.storage.json_loader import FunctionList, PromptList
 from src.storage.json_writer import JsonWriter
@@ -139,7 +140,14 @@ class Generator(BaseModel):
 
     def _write_results(self, function_calls: list[FunctionCall]) -> None:
         try:
-            print(f"\nWriting results to {self.writer.output_path.as_posix()}...")
+            print(
+                f"\nWriting results to \
+                {self.writer.output_path.as_posix()}..."
+                )
             self.writer.export_json(function_calls)
-        except OSError as e:
-            print(f"error: cannot write {self.writer.output_path}: {e.strerror or e}", file=sys.stderr)
+        except OutputError as e:
+            print(
+                f"error: cannot write {self.writer.output_path}: \
+                {e}",
+                file=sys.stderr
+                )

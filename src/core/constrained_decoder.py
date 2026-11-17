@@ -1,6 +1,6 @@
 from enum import Enum, auto
 import json
-from typing import Any
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 import numpy as np
 import numpy.typing as npt
@@ -54,11 +54,9 @@ class ConstrainedDecoder(BaseModel):
     token_limit: int = Field(gt=0, lt=5000, default=TOKEN_LIMIT)
     fn_name_ids: dict[str, list[int]] = Field(default_factory=dict, exclude=True)
     base_context_ids: list[int] = Field(default_factory=list, exclude=True)
-    quote_id: int = Field(default=0, exclude=True)
-    true_id: int = Field(default=0, exclude=True)
-    false_id: int = Field(default=0, exclude=True)
     state: DecoderState = DecoderState.FN_PROMPT
-    
+    selected_fn: Optional[FnDefinition] = Field(default=None, exclude=True)
+
     def model_post_init(self, context) -> None:
         # name -> its token ids, e.g. "fn_greet" -> [id, id, id]
         self.fn_name_ids = {fn_name: self.llm.encode(fn_name) for fn_name in self.fn_by_name}
@@ -74,11 +72,6 @@ class ConstrainedDecoder(BaseModel):
         # "\n".join(lines) puts one function per line.
         base_context = SYSTEM.format(functions="\n".join(lines))
         self.base_context_ids = self.llm.encode(base_context)
-        # Token ids we need to refer to directly. encode returns a
-        # list, [0] takes its first (here: only) id.
-        self.quote_id = self.llm.encode('"')[0]
-        self.true_id = self.llm.encode("true")[0]
-        self.false_id = self.llm.encode("false")[0]
 
         # It is more efficient to encode all function names once
         # Rather than encode them all for each prompt generation
@@ -108,57 +101,74 @@ class ConstrainedDecoder(BaseModel):
         that were encoded during the generation, we store the 
         length of the base_ids.
         """
+        self.state = DecoderState.FN_PROMPT
         token_ids = self.base_context_ids + self.llm.encode(USER.format(prompt=prompt))
         base_ids_len = len(token_ids)
-        selected_fn = None
         data = ""
         while self.state != DecoderState.FINISH:
-            if self.state == DecoderState.FN_PROMPT:
-                data += '{"prompt": ' + f'"{prompt}"' + f', "name": "'
-                token_ids += self.llm.encode(data)
-                self.state = DecoderState.FN_NAME
-            elif self.state == DecoderState.FN_NAME:
-                name = self.select_best_fn_name(token_ids)
-                data += f'{name}",' + '"parameters": {'
-                selected_fn = self.fn_by_name.get(name)
-                token_ids += self.llm.encode(data)
-                self.state = DecoderState.FN_PARAMS
-            elif self.state == DecoderState.FN_PARAMS:
-                # now, for each param, I need to know its type.
-                # I am going to repeat this process the amount of
-                # times as the params lenght
-                # params is a dict, so I can iterate over its items
-                # and get its name and type.
-                if not selected_fn:
-                    raise ValueError(f"did not found function name matching this prompt: {prompt}")
-                param_count = len(selected_fn.parameters)
-                for i, (param_name, param) in enumerate(selected_fn.parameters.items()):
-                    if i == 0:
-                        chunk = f'"{param_name}": '
-                    else:
-                        chunk = f', "{param_name}": '
-                    data += chunk
-                    token_ids += self.llm.encode(chunk)
-                    value: Any = None
-                    if param.type == "number":
-                        value = self.generate_number(token_ids)
-                    elif param.type == "integer":
-                        value = self.generate_number(token_ids, integer=True)
-                    elif param.type == "string":
-                        value = self.generate_string(token_ids)
-                    if i == param_count - 1:
-                        chunk = f'{value}' + '}'
-                    else:
-                        chunk = f'{value}'
-                    data += chunk
-                    token_ids += self.llm.encode(chunk)
-
-                self.state = DecoderState.FINISH
+            self._handle_state(prompt, token_ids, data)
 
         data += "}"
         token_ids += self.llm.encode("}")
-        self.state = DecoderState.FN_PROMPT
         return self.llm.decode(token_ids[base_ids_len:])
+
+    def _handle_state(self, prompt: str, token_ids: list[int], data: str) -> None:
+            if self.state == DecoderState.FN_PROMPT:
+                chunk = '{"prompt": ' + json.dumps(prompt) + f', "name": "'
+                data += chunk
+                token_ids += self.llm.encode(chunk)
+                self.state = DecoderState.FN_NAME
+            elif self.state == DecoderState.FN_NAME:
+                self._handle_fn_name(token_ids, data)
+            elif self.state == DecoderState.FN_PARAMS:
+                self._handle_params(prompt, token_ids, data)
+
+    def _handle_fn_name(self, token_ids: list[int], data: str) -> None:
+        name = self.select_best_fn_name(token_ids)
+        chunk = f'{name}",' + '"parameters": {'
+        self.selected_fn = self.fn_by_name.get(name)
+        data += chunk
+        token_ids += self.llm.encode(chunk)
+        self.state = DecoderState.FN_PARAMS
+
+    def _handle_params(self, prompt: str, token_ids: list[int], data: str) -> None:
+        # now, for each param, I need to know its type.
+        # I am going to repeat this process the amount of
+        # times as the params lenght
+        # params is a dict, so I can iterate over its items
+        # and get its name and type.
+        if not self.selected_fn:
+            raise ValueError(f"did not found function name matching this prompt: {prompt}")
+        param_count = len(self.selected_fn.parameters)
+        if param_count == 0:
+            chunk = '}'
+            data += chunk
+            token_ids += self.llm.encode(chunk)
+            self.state = DecoderState.FINISH
+            return
+        for i, (param_name, param) in enumerate(self.selected_fn.parameters.items()):
+            if i == 0:
+                chunk = f'"{param_name}": '
+            else:
+                chunk = f', "{param_name}": '
+            data += chunk
+            token_ids += self.llm.encode(chunk)
+            value: Any = None
+            if param.type == "number":
+                value = self.generate_number(token_ids)
+            elif param.type == "integer":
+                value = self.generate_number(token_ids, integer=True)
+            elif param.type == "boolean":
+                value = self.generate_boolean(token_ids)
+            elif param.type == "string":
+                value = self.generate_string(token_ids)
+            if i == param_count - 1:
+                chunk = value + '}'
+            else:
+                chunk = value
+            data += chunk
+            token_ids += self.llm.encode(chunk)
+        self.state = DecoderState.FINISH
 
     def apply_mask(self, mask: npt.NDArray[np.bool_], logits: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
         """Apply a mask to logits, setting invalid tokens to -inf.
@@ -207,36 +217,61 @@ class ConstrainedDecoder(BaseModel):
         and then remove any whitespace with rstrip(" ")
         """
         output = '"' # starts output with an opening quote
-        this_ids = list(token_ids) # local copy for this function
-        this_ids.append(self.llm.encode('"'))
+        ids_copy = list(token_ids) # local copy for this function
+        ids_copy.append(self.llm.encode('"')[0])
         escaped = 0
         for _ in range(self.token_limit):
-            logits = self.llm.logits(this_ids)
+            logits = self.llm.logits(ids_copy)
             masked = self.apply_mask(self.vocab.str_valid[escaped], logits)
             best_token = self.select_best_token(masked)
             close_quote_idx = int(self.vocab.str_closed[escaped][best_token])
             if close_quote_idx >= 0:
                 output += self.vocab.ids_to_tokens[best_token][:close_quote_idx + 1]
-                this_ids.append(best_token)
+                ids_copy.append(best_token)
                 break
             output += self.vocab.ids_to_tokens[best_token]
             escaped = int(self.vocab.str_escaped[escaped][best_token])
-            this_ids.append(best_token)
+            ids_copy.append(best_token)
  
         if output[-1] == "\\" or escaped:
             output = output[:-1]
-            this_ids.append(self.vocab.tokens_to_ids.get("\\", 59))
+            ids_copy.append(self.vocab.tokens_to_ids.get("\\", 59))
+        
         output = output.rstrip(" ")
+
+        # If output does not have the closing quote due to token_limit
+        # Then add it manually to not break the JSON
+        if output[-1] != '"':
+            output += '"'
+
         return output
 
 
-    def generate_number(self, token_ids: list[int], integer: bool = False) -> str:
+    def generate_boolean(self, token_ids: list[int]) -> str:
         """
         Pour generer une numbre, on doit tout simplement recevoir les logits
         qui sont nummeres valides, s'il n'y a pas
         """
+        logits = self.llm.logits(token_ids)
+        masked = self.apply_mask(self.only(self.vocab.true_id, self.vocab.false_id), logits)
+        best_token = np.argmax(masked)
+        value = "true" if best_token == self.vocab.true_id else "false"
+        return value
+
+    def generate_number(self, token_ids: list[int], integer: bool = False) -> str:
+        """
+        To generate a number I receive the token_ids that the model
+        suggest, limiting the tokens received by the variable token_limit
+
+        - Minus sign is only allowed for the first character
+        - a dot '.' is only allowed if type is not integer, and
+          if and only if it does not contains a dot already
+        - if the number ends by dot, erase it.
+        - if the model ask me to terminate the number, only allow it 
+          if the last character is not a dot.
+        """
         output = ""
-        this_ids = list(token_ids) # local copy for this function
+        ids_copy = list(token_ids) # local copy for this function
         for _ in range(self.token_limit):
             # any(...) is True if at least one character is a digit
             has_digit = any(c.isdigit() for c in output)
@@ -256,32 +291,16 @@ class ConstrainedDecoder(BaseModel):
                 # may stop only once the number is complete
                 # ("", "-" and "12." are not valid numbers)
                 combined_mask |= self.vocab.end_number_mask
-            logits = self.llm.logits(this_ids)
+            logits = self.llm.logits(ids_copy)
             masked = self.apply_mask(combined_mask, logits)
             best_token = self.select_best_token(masked)
             if self.vocab.end_number_mask[best_token]:
                 break           # model says the number is finished
             output += self.vocab.ids_to_tokens[best_token]
-            this_ids.append(best_token)
+            ids_copy.append(best_token)
         # rstrip(".") removes "." characters from the END only.
         output = output.rstrip(".")  # in case we hit max tokens on ex: "12."
         return output
-
-    def masked_argmax(self, ids: list[int],
-                      mask: npt.NDArray[np.bool_]) -> int:
-        """Most likely token among those allowed by `mask`.
-
-        This is THE constrained-decoding step: run the model, set every
-        forbidden token's score to -infinity, take the best remaining.
-        """
-        logits = self.llm.logits(ids)
-        # np.where(mask, a, b): for each position, take a if mask is
-        #   True there, else b. So allowed tokens keep their score and
-        #   forbidden ones get -infinity (can never be the maximum).
-        # .argmax() returns the POSITION of the biggest value, which
-        #   is exactly the token id. int(...) turns numpy's number
-        #   type into a normal Python int.
-        return int(np.where(mask, logits, -np.inf).argmax())
 
     def only(self, *token_ids: int) -> npt.NDArray[np.bool_]:
         """Mask allowing exactly `token_ids`.
@@ -307,22 +326,25 @@ class ConstrainedDecoder(BaseModel):
         while len(candidates) > 1:
             next_candidates: dict[int, list[str]] = {}
             for name in candidates:
-                token_ids = self.fn_name_ids[name]
-                key = token_ids[step] if step < len(token_ids) else self.quote_id
+                name_ids = self.fn_name_ids[name]
+                key = name_ids[step] if step < len(name_ids) else self.vocab.quote_id
                 next_candidates.setdefault(key, []).append(name)
             if len(next_candidates) == 1:
                 # every candidate continues the same way: forced token,
                 # no need to ask the model.
-                chosen_token = list(next_candidates)[0] # list(dict) -> its keys
+                chosen_token_id = list(next_candidates)[0] # list(dict) -> its keys
             else:
                 # real choice: the model picks, but only among these.
                 # ids + picked = the prompt followed by the name so far;
                 # *next_candidates passes each key of next_candidates as a separate argument
-                chosen_token = self.masked_argmax(previous_ids + picked, self.only(*next_candidates))
-            candidates = next_candidates[chosen_token]
-            picked.append(chosen_token)
+                logits = self.llm.logits(previous_ids + picked)
+                masked = self.apply_mask(self.only(*next_candidates), logits)
+                chosen_token_id = masked.argmax()
+            
+            candidates = next_candidates[chosen_token_id]
+            picked.append(chosen_token_id)
             step += 1
-            if chosen_token == self.quote_id:
+            if chosen_token_id == self.vocab.quote_id:
                 break
         if len(candidates) == 0:
             raise ValueError("No candidate function found for this prompt")

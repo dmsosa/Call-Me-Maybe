@@ -2,16 +2,17 @@ import argparse
 from pathlib import Path
 import sys
 import time
-
 from src.core.utils import fmt_time
 from src.exception.exception import InputError
 from src.storage.json_writer import JsonWriter
 from .storage.json_loader import load_prompts, \
     load_function_list
 
+
 LLM_SDK_AVAILABLE = True
 
-def init_argparse(argv: list[str] | None = None) -> argparse.Namespace:
+
+def init_argparse() -> argparse.Namespace:
     """Parser of the terminal code """
     parser = argparse.ArgumentParser(
         description="Constrained function calling (Marco 7)."
@@ -32,7 +33,7 @@ def init_argparse(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main() -> int:
     """
     Jetzt, nachdem ich alle meinen JSON Dateien gespeichert habe,
     sollte ich ein while loop starten, das nich beendent, bis das
@@ -41,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     Kann ich ein program erstellen, der JSON Ladst, und anderer JSON
     als Ergebniss gibt?
     """
-    args = init_argparse(argv)
+    args = init_argparse()
     print("Loading input files...")
     try:
         fn_list = load_function_list(args.functions_definition)
@@ -50,13 +51,30 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return (1)
 
-    print(f"    {len(fn_list.root)} functions loaded successfully...")
-    print(f"    {len(prompt_list.root)} prompts loaded successfully...")
+    fn_count = len(fn_list.root)
+    prompts_count = len(prompt_list.root)
+    if fn_count == 0:
+        print(
+            "Error: Zero (0) functions loaded, "
+            "can not continue with the program",
+            file=sys.stderr
+            )
+        return (1)
+    if prompts_count == 0:
+        print(
+            "Error: Zero (0) prompts loaded, "
+            "can not continue with the program",
+            file=sys.stderr
+            )
+        return (1)
+
+    print(f"    {fn_count} functions loaded successfully...")
+    print(f"    {prompts_count} prompts loaded successfully...")
 
     try:
-        print(f"\nLoading LLM Model...")
+        print("\nLoading LLM Model...")
         start = time.time()
- 
+
         from llm_sdk import Small_LLM_Model
         from src.core.llm import LargeLanguageModel
         from src.core.generator import Generator
@@ -67,10 +85,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:
         print(f"Error: could not load the model: {e}", file=sys.stderr)
         return 1
-    
+
     print(f"    model loaded in {fmt_time(time.time() - start)}",
           file=sys.stderr)
-    
+
     # In this phase, once the model is loaded,
     # Start generating JSON for each prompt
     lang_generator = Generator(
@@ -80,26 +98,35 @@ def main(argv: list[str] | None = None) -> int:
             writer=JsonWriter(output_path=Path(args.output))
         )
     lang_generator.run()
+
     print(f"\n{'='*50}")
-    print(f"Completed: {len(lang_generator.results)} successes, {lang_generator.errors} errors")
+    print(
+        f"Completed: \
+        {len(lang_generator.results) - lang_generator.errors} \
+        successes, \
+        {lang_generator.errors} \
+        errors"
+        )
     print(f"Results in: {args.output}")
     print(f"done in {fmt_time(time.time() - start)} -> {args.output}",
           file=sys.stderr)
 
-
     return (0)
+
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except KeyboardInterrupt as e:
+    except KeyboardInterrupt:
         print(
-            f"user pressed Ctrl + C (KeyboardInterrupt)"
-            , file=sys.stderr
+            "user pressed Ctrl + C (KeyboardInterrupt)",
+            file=sys.stderr
             )
-        raise(SystemExit(1))
+        raise (SystemExit(1))
     except Exception as e:
         print(
-            f"Unexpected exception raised while running main function \n{e}\n"
-            , file=sys.stderr)
-        raise(SystemExit(1))
+            f"Unexpected exception raised while \
+            running main function \n{e}\n",
+            file=sys.stderr
+            )
+        raise (SystemExit(1))

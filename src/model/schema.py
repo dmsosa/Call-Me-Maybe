@@ -1,7 +1,7 @@
 import re
 from typing import Literal, Optional, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 SNAKE_CASE_REGEXP = r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
 
@@ -48,6 +48,17 @@ class FnDefinition(BaseModel):
     parameters: dict[str, ParamSpec] = Field(default_factory=dict)
     returns: ParamSpec | None = None
 
+    @model_validator(mode="after")
+    def valid_param_names(self) -> "FnDefinition":
+        for name in self.parameters:
+            if not re.fullmatch(SNAKE_CASE_REGEXP, name):
+                raise ValueError("" \
+                            "Parameter name must be a " \
+                            f"valid snake_Case string, received: '{name}'"
+                            )
+            
+        return self
+
 class PromptDefinition(BaseModel):
     """
     A prompt JSON, it only contains a 'prompt' field
@@ -55,16 +66,19 @@ class PromptDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: str = Field(min_length=1)
 
-    @field_validator("prompt", mode="before")
+    @field_validator("prompt", mode="after")
     @classmethod
     def strip_prompt(cls, v: str) -> str:
-        return v.strip()
+        v = v.strip()
+        if not v:
+            raise ValueError("Prompt must not be empty")
+        return v
 
 class FunctionCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    prompt: Optional[str]
-    name: Optional[str]
-    parameters: Optional[dict[str, object]]
+    prompt: str
+    name: str
+    parameters: dict[str, object]
 
 class OutputList(RootModel[list[FunctionCall]]):
     pass
