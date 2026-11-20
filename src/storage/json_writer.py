@@ -38,12 +38,19 @@ class JsonWriter(BaseModel):
         """
         try:
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            output = OutputList(function_call_list)
+
             payload = json.dumps(
-                [call.model_dump() for call in function_call_list],
+                [call.model_dump() for call in output.root],
                 indent=2,
                 ensure_ascii=False,
             )
             self.output_path.write_text(payload + "\n", encoding="utf-8")
+        except ValidationError as exc:
+            raise OutputError(
+                            "Error while writing output json file"
+                            f"{self.output_path} : {exc}"
+                            )
         except OSError as exc:
             raise OutputError(
                 f"Is not possible to write output json file {self.output_path} : {exc.strerror}"

@@ -17,6 +17,12 @@ class OutputError(Exception):
     """
 
 
+class VisualizerQuit(Exception):
+    """
+    Used to quit visualizer, see folder /visual
+    """
+
+
 def format_schema_error(exc: ValidationError, path: Path | str) -> str:
     """
     Transforms a Validation Error in a readable error for

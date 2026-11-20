@@ -2,6 +2,8 @@
 # rules below find uv right after ensure-uv installs it
 export PATH := $(HOME)/.local/bin:$(PATH)
 
+ARGS ?= --cache_results
+
 all: run
 
 # install uv only if it's missing
@@ -20,10 +22,10 @@ install: ensure-uv
 	uv sync
 
 run: install
-	uv run python -m src
+	uv run python -m src $(ARGS)
 
 debug: install
-	uv run python -m pdb -m src
+	uv run python -m pdb -m src $(ARGS)
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

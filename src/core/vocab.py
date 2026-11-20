@@ -4,6 +4,8 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, Field, ConfigDict
 
+from src.core.byte_level import build_char_to_byte
+
 
 # Characters that may follow a backslash inside a JSON string
 # (\" \\ \/ \b \f \n \r \t). \u is left out on purpose: it would
@@ -11,6 +13,9 @@ from pydantic import BaseModel, Field, ConfigDict
 # Note: in Python source '\\' is ONE backslash, so this string is
 # the 8 characters  "  \  /  b  f  n  r  t
 JSON_ESCAPES = '"\\/bfnrt'
+
+
+REQUIRED_TOKENS = ('"', "true", "false", "\\")
 
 
 class Vocab(BaseModel):
@@ -32,7 +37,7 @@ class Vocab(BaseModel):
 
     vocab_path: str
     n_logits: int = Field(gt=0)
-    tokens_to_ids: dict[int, str] = Field(default_factory=dict, exclude=True)
+    tokens_to_ids: dict[str, int] = Field(default_factory=dict, exclude=True)
     ids_to_tokens: dict[int, str] = Field(default_factory=dict, exclude=True)
     digit_mask: npt.NDArray[np.bool_] | None = Field(default=None, exclude=True)
     minus_mask: npt.NDArray[np.bool_] | None = Field(default=None, exclude=True)
@@ -44,6 +49,7 @@ class Vocab(BaseModel):
     quote_id: int = Field(default=0, exclude=True)
     true_id: int = Field(default=0, exclude=True)
     false_id: int = Field(default=0, exclude=True)
+    backslash_id: int = Field(default=0, exclude=True)
 
     def model_post_init(self, context) -> None:
         try:
@@ -54,54 +60,22 @@ class Vocab(BaseModel):
         except (FileNotFoundError, IOError, PermissionError, json.JSONDecodeError) as e:
             raise ValueError(f"Error creating the Vocab, bad path_to_vocab str: \n{e}")
         # one throwaway call just to learn the logits size (151936)
-        char_to_byte: dict[str, int] = self._build_char_to_byte()
+        char_to_byte: dict[str, int] = build_char_to_byte()
         self._build_mappings(raw, char_to_byte)
         self._build_masks()
 
         # Token ids we need to refer to directly. encode returns a
         # list, [0] takes its first (here: only) id.
-        self.quote_id = self.tokens_to_ids.get('"', 1) # 1 is the real id of double-quote (see vocab.json xd)
-        self.true_id = self.tokens_to_ids.get('true', 1866) # 1866 is the real id of true (see vocab.json)
-        self.false_id = self.tokens_to_ids.get('false', 3849) # 3576 is the real id of false (see vocab.json)
-
-    def _build_char_to_byte(self) -> dict[str, int]:
-        """
-        Maps unicode that GPT-2 use back to their original integer value (in bytes)
-        so that only values from 0 to 256 values exist.
-
-        Inverse of GPT-2 bytes_to_unicode ('Ġ' -> space, 'Ċ' -> newline).
-
-        vocab.json keys are byte-level strings: printable bytes map to
-        themselves, the other bytes were shifted to chr(256 + n).
-
-        Example: the token for " hello" is stored as "Ġhello" in vocab.json,
-        because a space (byte 32) is not printable, so it was shifted to
-        chr(256 + 32) = 'Ġ'. This table undoes that shift.
-        """
-        # Bytes that were kept as themselves: 
-        # the printable ASCII range
-        # '!'..'~' 
-        # and two printable Latin-1 ranges.
-        # ord("!") gives the number of a character (33).
-        bs = (list(range(ord("!"), ord("~") + 1))
-              + list(range(ord("¡"), ord("¬") + 1))
-              + list(range(ord("®"), ord("ÿ") + 1)))
-
-        # printable char -> its own byte value.
-        # This is a "dict comprehension": {key: value for item in list}.
-        # chr(33) is the reverse of ord: number -> character ("!").
-        table = {chr(b): b for b in bs}
-
-        # Every other byte (space, newline, control chars...) was given a
-        # replacement character chr(256), chr(257), ... in increasing order.
-        n = 0
-        for b in range(256):
-            if b not in bs:
-                table[chr(256 + n)] = b
-                n += 1
-
-        # Result: a table of the form 
-        return table
+        missing = [t for t in REQUIRED_TOKENS if t not in self.tokens_to_ids]
+        if missing:
+            raise ValueError(
+                f"model vocabulary unusable for constrained decoding: "
+                f"missing single token(s) {missing}"
+            )
+        self.quote_id = self.tokens_to_ids.get('"', 0) # 1 is the real id of double-quote (see vocab.json xd)
+        self.true_id = self.tokens_to_ids.get('true', 0) # 1866 is the real id of true (see vocab.json)
+        self.false_id = self.tokens_to_ids.get('false', 0) # 3576 is the real id of false (see vocab.json)
+        self.backslash_id = self.tokens_to_ids.get('\\', 0) # 3576 is the real id of false (see vocab.json)
 
     def _build_mappings(self, raw_logits: dict[str, Any], char_to_byte: dict[str, int]) -> None:
         for token, id in raw_logits.items():

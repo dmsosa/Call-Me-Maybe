@@ -51,3 +51,19 @@ def test_main_refuses_an_empty_function_file(
 
     assert code == 1
     assert "Zero (0) functions" in capsys.readouterr().err
+
+
+def test_argparse_exposes_the_model_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["prog"])
+
+    assert init_argparse().model == "Qwen/Qwen3-0.6B"
+
+
+def test_argparse_reads_an_alternative_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["prog", "--model", "Qwen/Qwen3-1.7B"])
+
+    assert init_argparse().model == "Qwen/Qwen3-1.7B"

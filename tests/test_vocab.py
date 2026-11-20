@@ -25,6 +25,7 @@ VOCAB = {
     "true": 8,
     "false": 9,
     "a\\": 10,
+    "\\": 11,
 }
 
 
@@ -37,7 +38,7 @@ def write_vocab(tmp_path: Path, payload: dict[str, int]) -> str:
 
 def fake_vocab(tmp_path: Path) -> Vocab:
     """Vocab de 11 tokens couvrant chiffre, signe, point, quote, etc."""
-    return Vocab(vocab_path=write_vocab(tmp_path, VOCAB), n_logits=11)
+    return Vocab(vocab_path=write_vocab(tmp_path, VOCAB), n_logits=12)
 
 
 # --------------------------------------------------------------------------
@@ -160,3 +161,26 @@ def test_real_vocab_special_ids_and_digit_mask() -> None:
     assert vocab.digit_mask is not None
     for token_id in np.flatnonzero(vocab.digit_mask):
         assert vocab.ids_to_tokens[int(token_id)].isdigit()
+
+
+# --------------------------------------------------------------------------
+# Portabilité : un autre modèle doit échouer clairement, pas mentir.
+# --------------------------------------------------------------------------
+
+REQUIRED_SINGLE_TOKENS = ['"', "true", "false"]
+
+
+@pytest.mark.parametrize("missing", REQUIRED_SINGLE_TOKENS)
+def test_missing_special_token_is_a_clear_error(
+    tmp_path: Path, missing: str
+) -> None:
+    """Sans ``true`` en un seul token, le décodeur booléen est faux.
+
+    ``tokens_to_ids.get("true", 1866)`` renvoie silencieusement l'id de
+    Qwen3 : avec un autre modèle, on masquerait un token au hasard. Il
+    faut échouer au démarrage.
+    """
+    payload = {k: v for k, v in VOCAB.items() if k != missing}
+
+    with pytest.raises(ValueError):
+        Vocab(vocab_path=write_vocab(tmp_path, payload), n_logits=11)

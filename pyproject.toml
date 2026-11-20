@@ -5,11 +5,13 @@ description = "Call Me Maybe - constrained function calling with a small LLM"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "blessed>=1.52.0",
     "llm-sdk",
     "numpy>=2.2.6",
     "pydantic>=2.14.3",
     # Direct dependency so the CPU-only index below also applies to the
     # transitive dependency pulled in by llm-sdk.
+    "regex>=2026.9.29",
     "torch",
 ]
 
@@ -34,6 +36,7 @@ members = [
 
 [tool.mypy]
 exclude = ["^\\.venv/", "^llm_sdk/"]
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -17,6 +17,7 @@ from src.model.schema import (
     ParamSpec,
     PromptDefinition,
 )
+from src.model.metrics import CmmMetrics
 from src.storage.json_writer import JsonWriter
 
 GREET = (
@@ -86,6 +87,7 @@ def build_generator(
         prompts=[PromptDefinition(prompt=p) for p in prompts],
         writer=JsonWriter(output_path=tmp_path / "results.json"),
         decoder=decoder,
+        metrics=CmmMetrics(metrics_path=tmp_path / "metrics.json"),
     )
 
 

@@ -1,17 +1,23 @@
 from enum import Enum, auto
 import json
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 import numpy as np
 import numpy.typing as npt
 from src.core.llm import LargeLanguageModel
 from src.core.vocab import Vocab
 from src.model.schema import FnDefinition, FunctionCall
+from src.visual.gui import Change
 
 
 # Safety limit: a value can never be longer than this many tokens,
 # so a confused model can't loop forever.
-TOKEN_LIMIT = 48
+TOKEN_LIMITS = {
+    "integer": 8,
+    "number": 12,
+    "boolean": 4,
+    "string": 48,
+}
 
 
 # Qwen3 chat format. <|im_start|>/<|im_end|> are special tokens that
@@ -37,6 +43,12 @@ USER = (
 )
 
 
+class Origin(StrEnum):
+    SCAFFOLD = "scaffold"   # hardcoded text (ids to be added)
+    MODEL    = "model"      # Model suggest a text (ids to be added)
+    INPUT    = "input"      # Prompt received as input
+
+
 class DecoderState(Enum):
     """
     Decoder Finite State Machine state
@@ -51,11 +63,13 @@ class ConstrainedDecoder(BaseModel):
     llm: LargeLanguageModel
     vocab: Vocab
     fn_by_name: dict[str, FnDefinition]
-    token_limit: int = Field(gt=0, lt=5000, default=TOKEN_LIMIT)
+    token_limits: dict[str, int] = Field(default=TOKEN_LIMITS)
     fn_name_ids: dict[str, list[int]] = Field(default_factory=dict, exclude=True)
-    base_context_ids: list[int] = Field(default_factory=list, exclude=True)
+    base_context_str: list[int] = Field(default_factory=list, exclude=True)
     state: DecoderState = DecoderState.FN_PROMPT
     selected_fn: Optional[FnDefinition] = Field(default=None, exclude=True)
+    data_str: str = Field(default="", exclude=True)
+    on_change: Optional[Callable[[Change], None]] = Field(default=None)
 
     def model_post_init(self, context) -> None:
         # name -> its token ids, e.g. "fn_greet" -> [id, id, id]
@@ -70,8 +84,7 @@ class ConstrainedDecoder(BaseModel):
             lines.append(f"{f.name}({args}) - {f.description}")
         # The system part is the same for every prompt: encode it once.
         # "\n".join(lines) puts one function per line.
-        base_context = SYSTEM.format(functions="\n".join(lines))
-        self.base_context_ids = self.llm.encode(base_context)
+        self.base_context_str = SYSTEM.format(functions="\n".join(lines))
 
         # It is more efficient to encode all function names once
         # Rather than encode them all for each prompt generation
@@ -102,16 +115,29 @@ class ConstrainedDecoder(BaseModel):
         length of the base_ids.
         """
         self.state = DecoderState.FN_PROMPT
-        token_ids = self.base_context_ids + self.llm.encode(USER.format(prompt=prompt))
+        token_ids = self.llm.encode(self.base_context_str + USER.format(prompt=prompt))
         base_ids_len = len(token_ids)
-        data = ""
         while self.state != DecoderState.FINISH:
-            self._handle_state(prompt, token_ids, data)
+            self._handle_state(prompt, token_ids, self.data)
 
-        data += "}"
-        token_ids += self.llm.encode("}")
+        self._add(Origin.SCAFFOLD, "}")
         return self.llm.decode(token_ids[base_ids_len:])
 
+    def _add(self, origin: Origin, text: str) -> None:
+        """
+        Add the required ids to the token_ids collected so far,
+        and its corresponding string to the data_str written so far,
+        this is for visualization purposes, before this function, we had:
+
+        ids = self.llm.encode(text)
+        self.token_ids += ids
+        self.data_str += chunk
+        """
+        ids = self.llm.encode(text)
+        self.token_ids += ids
+        self.parts.append(Part(origin, text, ids))
+        self.on_change(origin, text, ids)       # la vue, si elle existe
+        
     def _handle_state(self, prompt: str, token_ids: list[int], data: str) -> None:
             if self.state == DecoderState.FN_PROMPT:
                 chunk = '{"prompt": ' + json.dumps(prompt) + f', "name": "'
@@ -220,7 +246,7 @@ class ConstrainedDecoder(BaseModel):
         ids_copy = list(token_ids) # local copy for this function
         ids_copy.append(self.llm.encode('"')[0])
         escaped = 0
-        for _ in range(self.token_limit):
+        for _ in range(self.token_limits.get("string", 48)):
             logits = self.llm.logits(ids_copy)
             masked = self.apply_mask(self.vocab.str_valid[escaped], logits)
             best_token = self.select_best_token(masked)
@@ -235,7 +261,7 @@ class ConstrainedDecoder(BaseModel):
  
         if output[-1] == "\\" or escaped:
             output = output[:-1]
-            ids_copy.append(self.vocab.tokens_to_ids.get("\\", 59))
+            ids_copy.append(self.vocab.backslash_id)
         
         output = output.rstrip(" ")
 
@@ -245,7 +271,6 @@ class ConstrainedDecoder(BaseModel):
             output += '"'
 
         return output
-
 
     def generate_boolean(self, token_ids: list[int]) -> str:
         """
@@ -272,7 +297,9 @@ class ConstrainedDecoder(BaseModel):
         """
         output = ""
         ids_copy = list(token_ids) # local copy for this function
-        for _ in range(self.token_limit):
+        limit = self.token_limits.get("integer", 8) if integer \
+            else self.token_limits.get("number", 12)
+        for _ in range(limit):
             # any(...) is True if at least one character is a digit
             has_digit = any(c.isdigit() for c in output)
             # Build the mask for this step. Digits are always allowed.

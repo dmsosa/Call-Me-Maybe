@@ -359,7 +359,7 @@ def test_system_prompt_lists_every_function_and_its_parameters() -> None:
     }
     decoder = build_decoder(functions, llm=llm)
 
-    context = llm.decode(decoder.base_context_ids)
+    context = decoder.base_context_str
 
     assert "fn_greet(name: string) - Say hi" in context
     assert "fn_add_numbers(a: number, b: number)" in context
@@ -389,7 +389,7 @@ def test_integer_parameter_never_contains_a_dot() -> None:
     # Après "2", le modèle préfère "." : interdit pour un entier.
     llm.logits_script = [{10: 9.0}, {12: 9.0}, {10: 9.0}]
     decoder = build_decoder(one_noop_function(), llm=llm, vocab=number_vocab())
-    decoder.token_limit = 3
+    decoder.token_limits = {**decoder.token_limits, "integer": 3}
 
     value = decoder.generate_number([], integer=True)
 
@@ -447,7 +447,7 @@ def test_unterminated_string_is_never_returned_as_valid_json() -> None:
         )
     }
     decoder = build_decoder(functions, llm=llm, vocab=vocab)
-    decoder.token_limit = 1
+    decoder.token_limits = {**decoder.token_limits, "string": 1}
 
     try:
         raw = decoder.generate_json("p")
@@ -477,7 +477,7 @@ def test_number_cannot_start_with_a_dot() -> None:
     llm = FakeLLM()
     llm.logits_script = [{12: 9.0}, {14: 9.0}]
     decoder = build_decoder(one_noop_function(), llm=llm, vocab=number_vocab())
-    decoder.token_limit = 2
+    decoder.token_limits = {**decoder.token_limits, "number": 2}
 
     value = decoder.generate_number([])
 
@@ -521,7 +521,7 @@ def test_trailing_dot_at_the_token_limit_is_removed() -> None:
     llm = FakeLLM()
     llm.logits_script = [{10: 9.0}, {12: 9.0}]
     decoder = build_decoder(one_noop_function(), llm=llm, vocab=number_vocab())
-    decoder.token_limit = 2
+    decoder.token_limits = {**decoder.token_limits, "number": 2}
 
     assert decoder.generate_number([]) == "2"
 

@@ -1,33 +1,37 @@
 import json
+from pathlib import Path
 import sys
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
-
+from src.core.cache import CmmCache
 from src.core.constrained_decoder import ConstrainedDecoder
 from src.core.llm import LargeLanguageModel
 from src.core.utils import fmt_time
 from src.core.vocab import Vocab
 from src.exception.exception import OutputError
+from src.model.metrics import CmmMetrics, PromptMetrics
 from src.model.schema import FnDefinition, FunctionCall, PromptDefinition, value_matches
-from src.storage.json_loader import FunctionList, PromptList
 from src.storage.json_writer import JsonWriter
+from src.visual.gui import Change
 
-
-class Tokenizer(BaseModel):
-    fn_by_name: FunctionList
-    prompts: PromptList
 
 class Generator(BaseModel):
     llm: LargeLanguageModel
     fn_list: list[FnDefinition]
     prompts: list[PromptDefinition]
     writer: JsonWriter
+    metrics: CmmMetrics = Field(default_factory=CmmMetrics)
     results: list[FunctionCall] = Field(default_factory=list)
     errors: int = Field(ge=0, default=0)
+    cache_results: bool = Field(default=False)
+    cache_path: str = Field(default="data/output/cache_results.json")
+    cache: Optional[CmmCache] = Field(default=None)
+    on_change: Optional[Callable[[Change], None]] = Field(default=None)
     fn_by_name: dict[str, FnDefinition] = Field(default_factory=dict, exclude=True)
     decoder: Optional[ConstrainedDecoder] = Field(default=None, exclude=True)
-    
+
+
     def model_post_init(self, _context: Any):
         self._store_fn_names()
         n_logits = len(self.llm.logits(self.llm.encode("a")))
@@ -38,6 +42,12 @@ class Generator(BaseModel):
                 n_logits=n_logits
                 ),
             fn_by_name=self.fn_by_name,
+            on_change=self.on_change
+            )
+
+        self.cache = CmmCache(
+            path=Path(self.cache_path),
+            enabled=self.cache_results
             )
 
     def _store_fn_names(self) -> None:
@@ -52,21 +62,51 @@ class Generator(BaseModel):
         then a fallback value is used
         """
         results = []
+       
         for i, prompt in enumerate(self.prompts):
             t = time.time()
             before = self.llm.calls
-            try:
-                result = self.generate_function_call(prompt.prompt)
-            except Exception as e:
-                # never crash on one prompt: write a fallback entry instead
-                # so the output stays aligned with the input
-                print(f"  warning: {e}", file=sys.stderr)
-                result = self.fallback_result(prompt.prompt)
-                self.errors += 1
+            error = None
+            cached_result = None
+
+            if self.cache_results:                        
+                cached_result = self.cache.lookup(
+                    prompt=prompt.prompt,
+                    fn_list=self.fn_list,
+                    fn_by_name=self.fn_by_name
+                )
+            if cached_result is not None:
+                result = cached_result
+                state = "hit"
+            else:
+                try:
+                    result = self.generate_function_call(prompt.prompt)
+                    state = "miss"
+                    if self.cache is not None and self.cache.enabled:
+                        self.cache.store(prompt.prompt, self.fn_list, result)
+                except Exception as e:
+                    # never crash on one prompt: write a fallback entry instead
+                    # so the output stays aligned with the input
+                    print(f"  warning: {e}", file=sys.stderr)
+                    result = self.fallback_result(prompt.prompt)
+                    self.errors += 1
+                    error = e.__str__()
+                    state = "miss"
 
             results.append(result)
             # Write the function calls after each iteration
             self._write_results(results)
+
+            self.metrics.add_prompt(PromptMetrics(
+                index=i, prompt=prompt.prompt, name=result.name,
+                parameters=result.parameters or None,
+                calls=self.llm.calls - before,
+                duration_s=time.time() - t,
+                error=error,
+                cache=state
+            ))
+            self.metrics.write()
+
             # progress line: time, number of model runs, result.
             # {n:3d} = whole number padded to 3 characters (aligns columns)
             print(f"[{i}/{len(self.prompts)}] {fmt_time(time.time() - t)} "

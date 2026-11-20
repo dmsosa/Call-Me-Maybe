@@ -122,3 +122,89 @@ Sinon, continue avec le parametre suivant, changer le parametre_index
 
 Objectif: ajouter
 
+# Chapitre Quattre: le vocab.py
+
+Vocab.py est une morceaux tres important dans ce projet, je veux dire, c'est le propre Constraint Decode! car sa responsabilite est donnee les masks pour pouvoir rejete les tokens que n'interessant pas pour constroire une string, number, boolean ou integer 
+
+Pense aussi, que le generation des tokens est tres trivial: On ne pide les tokens au model que dans les situations suivants:
+
+1. on est en train de generer les "values" des champs "parameters" 
+
+2. en train de adiniver le nome du fonction selectione
+
+vocab.py — Le cœur du constrained decoding
+Le principe
+À chaque étape de génération, le modèle produit un vecteur de logits (un score par token du vocabulaire, ~151 643 valeurs). vocab.py fournit un masque binaire de la même taille :
+
+logits:  [ 0.3, -1.2,  4.7,  0.1, ... ]   ← 151 643 valeurs
+masque:  [  1,    0,    0,    1, ... ]   ← 1 = autorisé, 0 = interdit
+
+On applique le masque avant le sampling :
+
+logits = logits.masked_fill(mask == 0, float("-inf"))
+# → les tokens interdits ont probabilité 0, impossible qu'ils soient tirés
+
+Le modèle ne voit jamais un token qu'il ne devrait pas produire.
+
+Pourquoi la génération est "triviale"
+Tu n'appelles le modèle que dans deux situations :
+
+┌─────────────────────────────────────────────────────────┐
+│  Situation 1 : choix du nom de fonction                 │
+│                                                         │
+│  Le masque = { ids des tokens qui composent les noms    │
+│                des fonctions valides }                  │
+│  → le modèle ne peut produire QUE un nom existant       │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│  Situation 2 : génération de la valeur d'un paramètre   │
+│                                                         │
+│  Le masque dépend du type déclaré dans la               │
+│  définition de la fonction :                            │
+│    "type": "string"  → masque string                    │
+│    "type": "integer" → masque integer                   │
+│    "type": "boolean" → masque boolean                   │
+│                                                         │
+│  → le modèle ne peut produire QUE une valeur du bon type│
+└─────────────────────────────────────────────────────────┘
+
+Tout le reste (les clés JSON, les virgules, les accolades, :, etc.) est déterministe — tu les écris directement, sans passer par le modèle. Le modèle ne "décide" que le contenu sémantique.
+
+
+# Chapitre Sept: Creer te propre tokenisateur
+
+Encode:
+
+" Je suis une de les methods le plus important de ce projet"
+tokens = self.split(" ")
+
+Ca ne sirve pas, car pour faire une Tokenisateur, c'est deux choses.
+
+Vraiment, pour le bonus on ne doit pas faire une Tokenizer propre, car c'est une procesus tres important pour une LLM, dans leuelle le model avraira son vocab.json et son merge.json
+
+Le tokenizer a son propre trainement (avec une corpus) et algorithm de entrainement, appeller (BPE Byte Pair Encoding, Tokenization, WordPiece, etc), GPT-2 et Claude lorsque ca permettre representer ne importe quelle character affichable. Les autres models utilisant une UTF-8 byte fallback,  utilisant le BPE Tokenization, qui utilises les octes car ca permettre n'avoir pas une character <UNK>. GPT-2 et Claude, et autres models preferent utiliser petits tokens plutot que renvoyer le token UNKNOWN pluiseurs fois.
+
+
+Donc, l'objectif du tokenizer et produir une file vocab.json, ou on trouver les tokens avec ses ids. Pour ca c'est important utiliser le merge.txt aussi.
+
+Apres faire la normalisation e pre-tokenisation, quelle est le pas suivant?
+
+Le pas suivant est commencer a voir quelles fusions (merges) dans notre vocab sont elles dans le chunk que on est en train de verifier. Par exemple.
+
+Apres avoir vu ces ids, on doit retorner ca et les ajouter a le array de sortie. 
+
+# Chapitre Huit: Comment faire une visualisateur:
+
+Ca que on voix faire por visualiser:
+
+Afficher dans le ecran, et eraser tout: Ca donne la ilusion de movement.
+On peut utiliser une callback pour motrer les choses dans le ecran.
+
+Qu'est ce que je veux montrer?
+
+Prompt Index
+Prompt Count
+Nombre de prompt
+Tokens utilises
+Phrase colle dans le buffer_str ()
