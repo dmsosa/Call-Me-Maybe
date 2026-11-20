@@ -188,7 +188,11 @@ Le tokenizer a son propre trainement (avec une corpus) et algorithm de entrainem
 
 Donc, l'objectif du tokenizer et produir une file vocab.json, ou on trouver les tokens avec ses ids. Pour ca c'est important utiliser le merge.txt aussi.
 
+
 Apres faire la normalisation e pre-tokenisation, quelle est le pas suivant?
+
+Le premier pas est encoder les unicodes, car ca permettre former ne importe quelle sucession de characters avec les bytes initielles. Apres, ca, lorsque on a les ids initielles de notre vocabulaire, on commence pour passe l'algorithme de BPE a travers du corpus de trainement.
+
 
 Le pas suivant est commencer a voir quelles fusions (merges) dans notre vocab sont elles dans le chunk que on est en train de verifier. Par exemple.
 
