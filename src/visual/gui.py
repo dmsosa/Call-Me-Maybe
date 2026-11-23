@@ -6,7 +6,7 @@ from src.core.events import Change, Origin, Part
 from src.exception.exception import VisualizerQuit
 from src.visual.constants import HOR
 from .gui_utils import blank_grid, \
-    fill, \
+    fill, fit, \
     put, \
     box, \
     progress_bar, \
@@ -111,15 +111,27 @@ class CmmGui(BaseModel):
             put(rows, 1, 2 + k, line[: w - 2])
         put(rows, 0, 2 + len(info), HOR * w)
 
-        top, bottom = 2 + len(info) + 1, h - 3
+        top, bottom = 2 + len(info) + 1, h - 4
 
         right_w = min(38, max(28, w // 3))
         split = w - right_w - 1
         models = sum(1 for p in self.parts if p.origin is Origin.MODEL)
-        box(rows, 0, top, split, bottom,
-            f"buffer: {len(change.data_str)} chars, {models} model parts")
-        box(rows, split + 1, top, w - 1, bottom,
-            f"top-5 ({change.choices} masked allowed)")
+        box(
+            rows,
+            0,
+            top,
+            split,
+            bottom,
+            f"buffer: {len(change.data_str)} chars, {models} model parts"
+            )
+        box(
+            rows,
+            split + 1,
+            top,
+            w - 1,
+            bottom,
+            f"top-5 ({change.choices} masked allowed)"
+            )
 
         inner, inner_h = split - 1, bottom - top - 1
         cells: list[Cell] = []
@@ -134,13 +146,20 @@ class CmmGui(BaseModel):
                 rows[top + 1 + k][1 + j] = (ch, origin)
 
         for k, (tok, tid, logit) in enumerate(change.top[:inner_h]):
-            put(rows, split + 2, top + 1 + k,
-                f"{make_printable(tok):<12}{tid:<8}{logit:6.2f}"[: right_w - 2])
+            put(
+                rows,
+                split + 2,
+                top + 1 + k,
+                fit(
+                f"{make_printable(tok):<12}{tid:<8}{logit:6.2f}"[: right_w - 2],
+                right_w - 2,
+                self.term)
+                )
 
-        put(rows, 0, h - 2, HOR * w)
+        put(rows, 0, h - 3, HOR * w)
         keys = "[q] quit   [space] pas   [a] auto   [o] output"
-        put(rows, 1, h - 1, keys[: w - 2])
-        put(rows, 1, h, HOR * w)
+        put(rows, 1, h - 2, keys[: w - 2])
+        put(rows, 1, h - 1, HOR * w)
 
         for row in rows:
             assert len(row) == w, (len(row), w)
