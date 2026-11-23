@@ -78,6 +78,7 @@ def test_dump_has_exactly_the_expected_keys(tmp_path: Path) -> None:
     assert list(m.model_dump()) == [
         "metrics_path",
         "started_at",
+        "finished_at",
         "model_load_s",
         "total_s",
         "prompts",

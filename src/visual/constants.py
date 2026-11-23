@@ -1,0 +1,7 @@
+HOR = "─"
+VER = "│"
+CORNER_TL = "┌"
+CORNER_TR = "┐"
+CORNER_BL = "└"
+CORNER_BR = "┘"
+SPINNER_FRAMES = "|/-\\"

@@ -25,9 +25,8 @@ class CmmMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     metrics_path: Path = Path("data/output/metrics.json")
-    started_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    started_at: float = Field(ge=0.0, default=0.0)
+    finished_at: float = Field(ge=0.0, default=0.0)
     model_load_s: float = Field(ge=0.0, default=0.0)
     total_s: float = Field(ge=0.0, default=0.0)
     prompts: list[PromptMetrics] = Field(default_factory=list)

@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -6,10 +7,11 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 from src.core.cache import CmmCache
 from src.core.constrained_decoder import ConstrainedDecoder
+from src.core.events import Origin
 from src.core.llm import LargeLanguageModel
 from src.core.utils import fmt_time
 from src.core.vocab import Vocab
-from src.exception.exception import OutputError
+from src.exception.exception import OutputError, VisualizerQuit
 from src.model.metrics import CmmMetrics, PromptMetrics
 from src.model.schema import FnDefinition, FunctionCall, PromptDefinition, value_matches
 from src.storage.json_writer import JsonWriter
@@ -23,14 +25,19 @@ class Generator(BaseModel):
     writer: JsonWriter
     metrics: CmmMetrics = Field(default_factory=CmmMetrics)
     results: list[FunctionCall] = Field(default_factory=list)
-    errors: int = Field(ge=0, default=0)
-    cache_results: bool = Field(default=False)
-    cache_path: str = Field(default="data/output/cache_results.json")
+    cache_enabled: bool = Field(default=False)
+    cache_path: str = Field(default="data/output/cache_enabled.json")
     cache: Optional[CmmCache] = Field(default=None)
     on_change: Optional[Callable[[Change], None]] = Field(default=None)
     fn_by_name: dict[str, FnDefinition] = Field(default_factory=dict, exclude=True)
     decoder: Optional[ConstrainedDecoder] = Field(default=None, exclude=True)
-
+    errors_count: int = Field(ge=0, default=0, exclude=True)
+    run_index: int = Field(default=0, exclude=True)
+    run_prompt: str = Field(default="", exclude=True)
+    prompt_count: int = Field(default=0, gt=0, exclude=True)
+    run_cache_state: str = Field(default="off", exclude=True)
+    run_started: float = Field(default=0.0, exclude=True)
+    run_calls: int = Field(default=0, exclude=True)
 
     def model_post_init(self, _context: Any):
         self._store_fn_names()
@@ -42,13 +49,16 @@ class Generator(BaseModel):
                 n_logits=n_logits
                 ),
             fn_by_name=self.fn_by_name,
-            on_change=self.on_change
+            on_change=self._forward
             )
 
         self.cache = CmmCache(
             path=Path(self.cache_path),
-            enabled=self.cache_results
+            enabled=self.cache_enabled
             )
+        self.prompt_count = len(self.prompts)
+        if self.prompt_count > 10000:
+            raise ValueError("Exceeded prompt limit: 10000")
 
     def _store_fn_names(self) -> None:
         for fn in self.fn_list:
@@ -62,14 +72,14 @@ class Generator(BaseModel):
         then a fallback value is used
         """
         results = []
-       
         for i, prompt in enumerate(self.prompts):
-            t = time.time()
-            before = self.llm.calls
+            self.run_index, self.run_prompt = i, prompt.prompt
+            self.run_started = time.time()
+            self.run_calls = self.llm.calls
             error = None
             cached_result = None
 
-            if self.cache_results:                        
+            if self.cache_enabled:                        
                 cached_result = self.cache.lookup(
                     prompt=prompt.prompt,
                     fn_list=self.fn_list,
@@ -77,21 +87,36 @@ class Generator(BaseModel):
                 )
             if cached_result is not None:
                 result = cached_result
-                state = "hit"
+                self.run_cache_state = "hit"
+                self._emit("prompt_start")
+                self._forward(Change(
+                    event_type="append",
+                    step=i + 1,
+                    spt=0,
+                    origin=Origin.SCAFFOLD,
+                    text=f"{json.dumps(result.model_dump())} [CACHED]",
+                ))
             else:
                 try:
+                    self._emit("prompt_start")
                     result = self.generate_function_call(prompt.prompt)
-                    state = "miss"
+                    self.run_cache_state = "miss"
                     if self.cache is not None and self.cache.enabled:
-                        self.cache.store(prompt.prompt, self.fn_list, result)
+                        self.cache.store(
+                            prompt=prompt.prompt,
+                            fn_list=self.fn_list,
+                            call=result
+                            )
+                except VisualizerQuit:
+                    break
                 except Exception as e:
                     # never crash on one prompt: write a fallback entry instead
                     # so the output stays aligned with the input
                     print(f"  warning: {e}", file=sys.stderr)
                     result = self.fallback_result(prompt.prompt)
-                    self.errors += 1
+                    self.errors_count += 1
                     error = e.__str__()
-                    state = "miss"
+                    self.run_cache_state = "miss"
 
             results.append(result)
             # Write the function calls after each iteration
@@ -100,20 +125,23 @@ class Generator(BaseModel):
             self.metrics.add_prompt(PromptMetrics(
                 index=i, prompt=prompt.prompt, name=result.name,
                 parameters=result.parameters or None,
-                calls=self.llm.calls - before,
-                duration_s=time.time() - t,
+                calls=self.llm.calls - self.run_calls,
+                duration_s=time.time() - self.run_started,
                 error=error,
-                cache=state
+                cache=self.run_cache_state
             ))
             self.metrics.write()
+            
+            if self.on_change is None:
+                # progress line: time, number of model runs, result.
+                # {n:3d} = whole number padded to 3 characters (aligns columns)
+                print(f"[{i}/{len(self.prompts)}] {fmt_time(time.time() - self.run_started)} "
+                      f"{self.llm.calls - self.run_calls:3d} calls  {result.name} "
+                      f"{json.dumps(result.parameters)}", file=sys.stderr)
+            self._emit("prompt_end")
 
-            # progress line: time, number of model runs, result.
-            # {n:3d} = whole number padded to 3 characters (aligns columns)
-            print(f"[{i}/{len(self.prompts)}] {fmt_time(time.time() - t)} "
-                  f"{self.llm.calls - before:3d} calls  {result.name} "
-                  f"{json.dumps(result.parameters)}", file=sys.stderr)
-
-        self.errors
+        self.metrics.finished_at = time.time()
+        self._emit("end_visualization")
         self.results = results
 
     def generate_function_call(self, prompt: str) -> FunctionCall:
@@ -181,8 +209,8 @@ class Generator(BaseModel):
     def _write_results(self, function_calls: list[FunctionCall]) -> None:
         try:
             print(
-                f"\nWriting results to \
-                {self.writer.output_path.as_posix()}..."
+                "\nWriting results to "
+                f"{self.writer.output_path.as_posix()}..."
                 )
             self.writer.export_json(function_calls)
         except OutputError as e:
@@ -191,3 +219,21 @@ class Generator(BaseModel):
                 {e}",
                 file=sys.stderr
                 )
+
+    def _get_context(self) -> dict[str, Any]:
+        calls = max(1, self.llm.calls - self.run_calls)
+        return dict(
+            prompt_index=self.run_index + 1,
+            total_prompts=self.prompt_count,
+            cache=self.run_cache_state,
+            spt=(time.time() - self.run_started) / calls,
+            prompt=self.run_prompt,
+        )
+
+    def _forward(self, change: Change) -> None:
+        if self.on_change is not None:
+            self.on_change(replace(change, **self._get_context()))
+
+    def _emit(self, event_type: str) -> None:
+        if self.on_change is not None:
+            self.on_change(Change(event_type=event_type, **self._get_context()))

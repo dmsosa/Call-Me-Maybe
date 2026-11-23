@@ -266,7 +266,7 @@ class CachedGenerator(Generator):
     def model_post_init(self, context: Any) -> None:
         self._store_fn_names()
         self.cache = CmmCache(
-            path=Path(self.cache_path), enabled=self.cache_results
+            path=Path(self.cache_path), enabled=self.cache_enabled
         )
 
 
@@ -282,7 +282,7 @@ def build_cached(
         prompts=[PromptDefinition(prompt=p) for p in prompts],
         writer=JsonWriter(output_path=tmp_path / "results.json"),
         decoder=decoder,
-        cache_results=True,
+        cache_enabled=True,
         cache_path=str(tmp_path / "answers.json"),
         metrics=CmmMetrics.model_construct(
             metrics_path=tmp_path / "metrics.json"
@@ -311,7 +311,7 @@ def test_fallback_is_never_cached(tmp_path: Path) -> None:
 
     written = CmmCache(path=tmp_path / "answers.json", enabled=True)
 
-    assert failing.errors == 1
+    assert failing.errors_count == 1
     assert written.entries == {}, "un fallback ne doit jamais entrer en cache"
 
 
@@ -331,3 +331,61 @@ def test_run_stores_under_the_key_it_will_look_up(tmp_path: Path) -> None:
     expected = cache_at(tmp_path).cache_key("2+3", FNS)
 
     assert list(raw["entries"]) == [expected]
+
+
+# ------------------------------------------------- coherence cache / evenements
+
+
+def test_store_uses_the_lookup_prompt_not_the_call_prompt(tmp_path: Path) -> None:
+    """Une reponse dont le champ 'prompt' differe ne doit pas empoisonner la cle."""
+    cache = cache_at(tmp_path)
+    other = FunctionCall(
+        prompt="un autre prompt", name="fn_add", parameters={"a": 1.0, "b": 2.0}
+    )
+
+    cache.store("2+3", FNS, other)
+
+    assert cache.lookup("2+3", FNS, BY_NAME) is not None
+
+
+def test_lookup_rejects_an_entry_missing_required_parameters(
+        tmp_path: Path) -> None:
+    """Un cache valide ne doit pas ressusciter un appel incomplet."""
+    cache = cache_at(tmp_path)
+    cache.store(
+        "2+3", FNS, FunctionCall(prompt="2+3", name="fn_add", parameters={})
+    )
+
+    assert cache.lookup("2+3", FNS, BY_NAME) is None
+
+
+def test_cache_hit_sends_prompt_start_before_the_result(tmp_path: Path) -> None:
+    """Sinon la vue garde les parts du prompt precedent et son header perime."""
+    first = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    first.run()
+
+    second = build_cached(ScriptedDecoder({}), ["2+3"], tmp_path)
+    seen: list[Any] = []
+    second.on_change = seen.append
+    second.run()
+
+    assert seen, "un hit doit quand meme produire un evenement"
+    assert seen[0].event_type == "prompt_start"
+    assert seen[0].cache == "hit"
+
+
+def test_exactly_one_prompt_end_per_prompt_including_hits(tmp_path: Path) -> None:
+    """Le compteur de progression de la vue depend de ce nombre."""
+    first = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    first.run()
+
+    second = build_cached(ScriptedDecoder({}), ["2+3"], tmp_path)
+    seen: list[Any] = []
+    second.on_change = seen.append
+    second.run()
+
+    assert [c.event_type for c in seen].count("prompt_end") == 1

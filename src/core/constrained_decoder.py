@@ -1,13 +1,14 @@
+from dataclasses import dataclass
 from enum import Enum, auto
 import json
 from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 import numpy as np
 import numpy.typing as npt
+from src.core.events import Origin, Part, Change
 from src.core.llm import LargeLanguageModel
 from src.core.vocab import Vocab
-from src.model.schema import FnDefinition, FunctionCall
-from src.visual.gui import Change
+from src.model.schema import FnDefinition
 
 
 # Safety limit: a value can never be longer than this many tokens,
@@ -43,12 +44,6 @@ USER = (
 )
 
 
-class Origin(StrEnum):
-    SCAFFOLD = "scaffold"   # hardcoded text (ids to be added)
-    MODEL    = "model"      # Model suggest a text (ids to be added)
-    INPUT    = "input"      # Prompt received as input
-
-
 class DecoderState(Enum):
     """
     Decoder Finite State Machine state
@@ -68,8 +63,11 @@ class ConstrainedDecoder(BaseModel):
     base_context_str: list[int] = Field(default_factory=list, exclude=True)
     state: DecoderState = DecoderState.FN_PROMPT
     selected_fn: Optional[FnDefinition] = Field(default=None, exclude=True)
+    parts: list[Part] = Field(default_factory=list, exclude=True)
     data_str: str = Field(default="", exclude=True)
     on_change: Optional[Callable[[Change], None]] = Field(default=None)
+    last_choices: int = Field(default=0, exclude=True)
+    last_top: tuple[tuple[str, int, float], ...] = Field(default_factory=tuple, exclude=True)
 
     def model_post_init(self, context) -> None:
         # name -> its token ids, e.g. "fn_greet" -> [id, id, id]
@@ -118,12 +116,11 @@ class ConstrainedDecoder(BaseModel):
         token_ids = self.llm.encode(self.base_context_str + USER.format(prompt=prompt))
         base_ids_len = len(token_ids)
         while self.state != DecoderState.FINISH:
-            self._handle_state(prompt, token_ids, self.data)
-
-        self._add(Origin.SCAFFOLD, "}")
+            self._handle_state(prompt, token_ids)
+        token_ids += self._add(Origin.SCAFFOLD, "}")
         return self.llm.decode(token_ids[base_ids_len:])
 
-    def _add(self, origin: Origin, text: str) -> None:
+    def _add(self, origin: Origin, text: str) -> list[int]:
         """
         Add the required ids to the token_ids collected so far,
         and its corresponding string to the data_str written so far,
@@ -133,31 +130,44 @@ class ConstrainedDecoder(BaseModel):
         self.token_ids += ids
         self.data_str += chunk
         """
+        if not text:
+            return []
         ids = self.llm.encode(text)
-        self.token_ids += ids
-        self.parts.append(Part(origin, text, ids))
-        self.on_change(origin, text, ids)       # la vue, si elle existe
+        self.data_str += text
+        part = Part(len(self.parts), origin, text, tuple(ids))
+        self.parts.append(part)
+        if self.on_change:
+            self.on_change(self._change(origin, text, tuple(ids)))
+        return ids
         
-    def _handle_state(self, prompt: str, token_ids: list[int], data: str) -> None:
+    def _handle_state(
+            self,
+            prompt: str,
+            token_ids: list[int],
+            ) -> None:
             if self.state == DecoderState.FN_PROMPT:
-                chunk = '{"prompt": ' + json.dumps(prompt) + f', "name": "'
-                data += chunk
-                token_ids += self.llm.encode(chunk)
+                token_ids += self._add(Origin.SCAFFOLD, '{"prompt": ')
+                token_ids += self._add(Origin.INPUT, json.dumps(prompt))
+                token_ids += self._add(Origin.SCAFFOLD, ', "name": "')
                 self.state = DecoderState.FN_NAME
             elif self.state == DecoderState.FN_NAME:
-                self._handle_fn_name(token_ids, data)
+                self._handle_fn_name(token_ids)
             elif self.state == DecoderState.FN_PARAMS:
-                self._handle_params(prompt, token_ids, data)
+                self._handle_params(prompt, token_ids)
 
-    def _handle_fn_name(self, token_ids: list[int], data: str) -> None:
+    def _handle_fn_name(self, token_ids: list[int]) -> None:
         name = self.select_best_fn_name(token_ids)
-        chunk = f'{name}",' + '"parameters": {'
+        token_ids += self._add(Origin.MODEL, f'{name}')
+        token_ids += self._add(Origin.SCAFFOLD, '",')
+        token_ids += self._add(Origin.SCAFFOLD, '"parameters": {')
         self.selected_fn = self.fn_by_name.get(name)
-        data += chunk
-        token_ids += self.llm.encode(chunk)
         self.state = DecoderState.FN_PARAMS
 
-    def _handle_params(self, prompt: str, token_ids: list[int], data: str) -> None:
+    def _handle_params(
+            self,
+            prompt: str,
+            token_ids: list[int]
+            ) -> None:
         # now, for each param, I need to know its type.
         # I am going to repeat this process the amount of
         # times as the params lenght
@@ -167,9 +177,7 @@ class ConstrainedDecoder(BaseModel):
             raise ValueError(f"did not found function name matching this prompt: {prompt}")
         param_count = len(self.selected_fn.parameters)
         if param_count == 0:
-            chunk = '}'
-            data += chunk
-            token_ids += self.llm.encode(chunk)
+            token_ids += self._add(Origin.SCAFFOLD, '}')
             self.state = DecoderState.FINISH
             return
         for i, (param_name, param) in enumerate(self.selected_fn.parameters.items()):
@@ -177,8 +185,7 @@ class ConstrainedDecoder(BaseModel):
                 chunk = f'"{param_name}": '
             else:
                 chunk = f', "{param_name}": '
-            data += chunk
-            token_ids += self.llm.encode(chunk)
+            token_ids += self._add(Origin.SCAFFOLD, chunk)
             value: Any = None
             if param.type == "number":
                 value = self.generate_number(token_ids)
@@ -189,11 +196,10 @@ class ConstrainedDecoder(BaseModel):
             elif param.type == "string":
                 value = self.generate_string(token_ids)
             if i == param_count - 1:
-                chunk = value + '}'
+                token_ids += self._add(Origin.MODEL, value)
+                token_ids += self._add(Origin.SCAFFOLD, "}")
             else:
-                chunk = value
-            data += chunk
-            token_ids += self.llm.encode(chunk)
+                token_ids += self._add(Origin.MODEL, value)
         self.state = DecoderState.FINISH
 
     def apply_mask(self, mask: npt.NDArray[np.bool_], logits: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
@@ -207,6 +213,25 @@ class ConstrainedDecoder(BaseModel):
             A masked logits array where invalid tokens have -inf.
         """
         return np.where(mask, logits, -np.inf)
+
+    def _record(self, masked: npt.NDArray[np.float32]) -> None:
+        """
+        Stores the 5 first logits that have been received,
+        and the 5 first logits (after mask), used by the
+        visualizer
+        """
+        finite = np.flatnonzero(np.isfinite(masked))
+        self.last_choices = int(finite.size)
+        if finite.size == 0:
+            self.last_top = ()
+            return
+        k = min(5, finite.size)
+        idx = finite if finite.size <= k else finite[np.argpartition(-masked[finite], k)[:k]]
+        idx = idx[np.argsort(-masked[idx])]
+        self.last_top = tuple(
+            (self.vocab.ids_to_tokens[int(i)], int(i), float(masked[int(i)]))
+            for i in idx
+        )
 
     def select_best_token(self, masked: npt.NDArray[np.float32]) -> int:
         """Select the token with the highest logit.
@@ -250,6 +275,7 @@ class ConstrainedDecoder(BaseModel):
             logits = self.llm.logits(ids_copy)
             masked = self.apply_mask(self.vocab.str_valid[escaped], logits)
             best_token = self.select_best_token(masked)
+            self._record(masked)
             close_quote_idx = int(self.vocab.str_closed[escaped][best_token])
             if close_quote_idx >= 0:
                 output += self.vocab.ids_to_tokens[best_token][:close_quote_idx + 1]
@@ -279,7 +305,7 @@ class ConstrainedDecoder(BaseModel):
         """
         logits = self.llm.logits(token_ids)
         masked = self.apply_mask(self.only(self.vocab.true_id, self.vocab.false_id), logits)
-        best_token = np.argmax(masked)
+        best_token = self.select_best_token(masked)
         value = "true" if best_token == self.vocab.true_id else "false"
         return value
 
@@ -376,3 +402,17 @@ class ConstrainedDecoder(BaseModel):
         if len(candidates) == 0:
             raise ValueError("No candidate function found for this prompt")
         return candidates[0]
+
+    def _change(self, origin: Origin, text: str, ids: list[int]) -> Change:
+        return Change(
+            event_type="append",
+            step=len(self.parts) - 1,
+            origin=origin,
+            text=text,
+            ids=ids,
+            data_str=self.data_str,
+            choices=self.last_choices,
+            top=self.last_top,
+            state=self.state.name,
+        )
+    
