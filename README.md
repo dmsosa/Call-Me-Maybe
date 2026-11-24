@@ -351,6 +351,24 @@ uv run python -m pytest -q            # 119 tests, no model, a few seconds
 uv run flake8 tests/ && uv run python -m mypy tests/
 ```
 
+## Bonus part
+
+
+As a bonus, the following features were added to the project:
+
+Support for other models:
+model_name	Params	Context	Notes
+Qwen/Qwen3-0.6B	0.6B	32K	Your current default
+meta-llama/Llama-3.2-1B	1.2B	128K	Community licence
+openbmb/MiniCPM5-1B	1.1B	131K	LlamaForCausalLM arch, on-device SOTA
+huggingface.co/smollm-135m	135M	—	Tiny, edge
+huggingface.co/smollm-360m	360M	—	Edge
+tiiuae/Falcon-H1-Tiny-Multilingual-100M	90M	—	Hybrid Mamba
+
+Pretty straigthforward, it was only needed to pass a new argument called --model_name, and pass it to the constructor of the Small_LLM_Model, it only causes more difficulties if you plan to use your own Tokenizer as well, since it is not enough just to replicate the results of the Qwen model, but to actually use the vocab.json and merges.txt files from the model to be able to get the same tokens and ids to use. (For that, it's necessary to use the methods (get_path_to_vocab_file and get_path_to_merges_file))
+
+ a visualizer was added using the blessed library. This was the most difficult part since it meant make some changes within the generation process, again, the event emitter pattern was used here to be able to make the Gui "listen" for events that the generator is going to emit and then allow it to run the functions in charge of printing to the terminal.
+
 ## Resources
 
 **Model & inference**

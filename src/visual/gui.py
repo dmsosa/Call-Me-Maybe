@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from blessed import Terminal
 from src.core.events import Change, Origin, Part
 from src.exception.exception import VisualizerQuit
-from src.visual.constants import HOR
+from src.visual.constants import CYAN, DIM, GREEN, HOR, RED, RESET
 from .gui_utils import blank_grid, \
     fill, fit, \
     put, \
@@ -63,7 +63,7 @@ class CmmGui(BaseModel):
             return
         w = min(self.term.width, 120)
         h = min(self.term.height, 40)
-        if w <= 120 or h <= 40:
+        if w < 60 or h < 18:
             print("Terminal is too small, can not print the grid.")
             return
         rows = self.frame(self.last, w, h)
@@ -104,8 +104,8 @@ class CmmGui(BaseModel):
             f"> {change.prompt}",
             "",
             f"- white: harcoded text",
-            f"- {self.term.cyan}blue: text from the user as input{self.term.normal}",
-            f"- {self.term.green}green: text from the model{self.term.normal}",
+            f"- {CYAN}blue: text from the user as input{RESET}",
+            f"- {GREEN}green: text from the model{RESET}",
         ]
         for k, line in enumerate(info):
             put(rows, 1, 2 + k, line[: w - 2])
@@ -157,7 +157,11 @@ class CmmGui(BaseModel):
                 )
 
         put(rows, 0, h - 3, HOR * w)
-        keys = "[q] quit   [space] pas   [a] auto   [o] output"
+        keys_on = f"{GREEN}ON{RESET}" if self.step_mode else f"{RED}OFF{RESET}"
+        keys_on_dim = "" if self.step_mode else DIM
+        keys = f"KEYS: {keys_on}" \
+            f"{keys_on_dim}  -- [q] quit   [space] step   " \
+            f"[a] auto   [o] output{RESET}"
         put(rows, 1, h - 2, keys[: w - 2])
         put(rows, 1, h - 1, HOR * w)
 

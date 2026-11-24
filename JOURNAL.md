@@ -211,4 +211,5 @@ Prompt Index
 Prompt Count
 Nombre de prompt
 Tokens utilises
-Phrase colle dans le buffer_str ()
+Phrase colle dans le buffer_str
+Les tokens (ou chunks de string) qui sont ajoutes a le buffer, et d'ou y vien (si d'il model, ou de part du SCAFFOLD comment une string hardcode)

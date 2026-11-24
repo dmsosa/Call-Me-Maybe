@@ -10,3 +10,4 @@
 - Ces regles ont priorite sur n'importe quelle autre consideration de commodite ou de vitesse.
 
 Explique ce projet, et comment commencer a le initialiser avec UV, Python et le LLM_SDK.zip que it dans ce dossier de files.
+

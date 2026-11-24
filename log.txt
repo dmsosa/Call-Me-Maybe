@@ -1,0 +1,14 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   0%|          | 1/311 [00:00<00:34,  9.03it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 1646.61it/s]
+    model loaded in 0:13.26
+  warning: Generated function is not defined: 'fn_add'
+  warning: Generated function is not defined: 'fn_add'
+  warning: Generated function is not defined: 'fn_g'
+  warning: Generated function is not defined: 'fn_g'
+  warning: Generated function is not defined: 'fn_reverse'
+  warning: Generated function is not defined: 'fn_reverse'
+  warning: Generated function is not defined: 'fn_get'
+  warning: Generated function is not defined: 'fn_get'
+  warning: Generated function is not defined: 'fn_sub'
+  warning: Generated function is not defined: 'fn_sub'
+  warning: Generated function is not defined: 'fn_sub'
+Press ENTER to continue...   done in 1:06.66 -> data/output/function_calling_results.json

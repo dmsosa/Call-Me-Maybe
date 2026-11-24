@@ -19,7 +19,7 @@ LLM_SDK_AVAILABLE = True
 def init_argparse() -> argparse.Namespace:
     """Parser of the terminal code """
     parser = argparse.ArgumentParser(
-        description="Constrained function calling (Marco 7)."
+        description="Constrained function calling for the Call Me Maybe project. "
     )
     parser.add_argument(
         "--functions_definition",
@@ -42,18 +42,19 @@ def init_argparse() -> argparse.Namespace:
     parser.add_argument(
         "--metrics_path",
         default="data/output/metrics.json",
+        help="Path where the metrics are going to be saved.",
     )
     parser.add_argument(
         "--cache_results",
         action="store_true",
         help="Store output results of function calls in a cache file.",
-        default="False"
+        default=False
     )
     parser.add_argument(
         "--cache_enabled",
         action="store_true",
         help="Load output results of function calls from the cache file.",
-        default="False"
+        default=False
     )
     parser.add_argument(
         "--model",
@@ -61,15 +62,15 @@ def init_argparse() -> argparse.Namespace:
         default="Qwen/Qwen3-0.6B"
     )
     parser.add_argument(
-        "--visualize",
+        "--visual",
         help="Activate a visualization Graphical User Interface",
-        default="False",
+        default=False,
         action="store_true"
     )
     parser.add_argument(
         "--step",
         help="Visualization step by step",
-        default="False",
+        default=False,
         action="store_true"
     )
 
@@ -113,8 +114,8 @@ def main() -> int:
     try:
         if args.cache_model:
             print("\nLoading LLM Model from cache...")
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
-            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
         else:
             print(
                 "\nLoading LLM Model,"
@@ -143,7 +144,7 @@ def main() -> int:
     model_load_s = time.time() - start
     on_change = None
     visualizer = None
-    if args.visualize and sys.stdout.isatty():
+    if args.visual and sys.stdout.isatty():
         visualizer = CmmGui(
             model_name=args.model,
             step_mode=args.step,
@@ -183,7 +184,7 @@ def main() -> int:
         "errors"
         )
     print(f"   Results in: {args.output}")
-    print(f"   done in {fmt_time(lang_generator.metrics.started_at - lang_generator.metrics.finished_ad)} -> {args.output}",
+    print(f"   done in {fmt_time(lang_generator.metrics.finished_at - lang_generator.metrics.started_at)} -> {args.output}",
           file=sys.stderr)
 
     return (0)

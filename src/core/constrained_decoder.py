@@ -113,14 +113,18 @@ class ConstrainedDecoder(BaseModel):
         length of the base_ids.
         """
         self.state = DecoderState.FN_PROMPT
+        self.data_str = ""
+        self.parts = []
+        self.selected_fn = None
+
         token_ids = self.llm.encode(self.base_context_str + USER.format(prompt=prompt))
         base_ids_len = len(token_ids)
         while self.state != DecoderState.FINISH:
             self._handle_state(prompt, token_ids)
         token_ids += self._add(Origin.SCAFFOLD, "}")
-        return self.llm.decode(token_ids[base_ids_len:])
+        return self.data_str
 
-    def _add(self, origin: Origin, text: str) -> list[int]:
+    def _add(self, origin: Origin, text: str, ids_from_model: list[int] | None = None) -> list[int]:
         """
         Add the required ids to the token_ids collected so far,
         and its corresponding string to the data_str written so far,
@@ -132,7 +136,7 @@ class ConstrainedDecoder(BaseModel):
         """
         if not text:
             return []
-        ids = self.llm.encode(text)
+        ids = ids_from_model if ids_from_model is not None else self.llm.encode(text)
         self.data_str += text
         part = Part(len(self.parts), origin, text, tuple(ids))
         self.parts.append(part)
@@ -157,9 +161,7 @@ class ConstrainedDecoder(BaseModel):
 
     def _handle_fn_name(self, token_ids: list[int]) -> None:
         name = self.select_best_fn_name(token_ids)
-        token_ids += self._add(Origin.MODEL, f'{name}')
-        token_ids += self._add(Origin.SCAFFOLD, '",')
-        token_ids += self._add(Origin.SCAFFOLD, '"parameters": {')
+        token_ids += self._add(Origin.SCAFFOLD, '", "parameters": {')
         self.selected_fn = self.fn_by_name.get(name)
         self.state = DecoderState.FN_PARAMS
 
@@ -186,20 +188,16 @@ class ConstrainedDecoder(BaseModel):
             else:
                 chunk = f', "{param_name}": '
             token_ids += self._add(Origin.SCAFFOLD, chunk)
-            value: Any = None
             if param.type == "number":
-                value = self.generate_number(token_ids)
+                self.generate_number(token_ids)
             elif param.type == "integer":
-                value = self.generate_number(token_ids, integer=True)
+                self.generate_number(token_ids, integer=True)
             elif param.type == "boolean":
-                value = self.generate_boolean(token_ids)
+                self.generate_boolean(token_ids)
             elif param.type == "string":
-                value = self.generate_string(token_ids)
+                self.generate_string(token_ids)
             if i == param_count - 1:
-                token_ids += self._add(Origin.MODEL, value)
-                token_ids += self._add(Origin.SCAFFOLD, "}")
-            else:
-                token_ids += self._add(Origin.MODEL, value)
+                token_ids += self._add(Origin.SCAFFOLD, "}") # end the json params
         self.state = DecoderState.FINISH
 
     def apply_mask(self, mask: npt.NDArray[np.bool_], logits: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
@@ -229,7 +227,7 @@ class ConstrainedDecoder(BaseModel):
         idx = finite if finite.size <= k else finite[np.argpartition(-masked[finite], k)[:k]]
         idx = idx[np.argsort(-masked[idx])]
         self.last_top = tuple(
-            (self.vocab.ids_to_tokens[int(i)], int(i), float(masked[int(i)]))
+            (self.vocab.ids_to_tokens.get(int(i), f"#{int(i)}"), int(i), float(masked[int(i)]))
             for i in idx
         )
 
@@ -267,47 +265,52 @@ class ConstrainedDecoder(BaseModel):
         remove it with output = output[:-1]
         and then remove any whitespace with rstrip(" ")
         """
-        output = '"' # starts output with an opening quote
-        ids_copy = list(token_ids) # local copy for this function
-        ids_copy.append(self.llm.encode('"')[0])
+        output = '"'
+        token_ids += self._add(Origin.SCAFFOLD, '"')
         escaped = 0
         for _ in range(self.token_limits.get("string", 48)):
-            logits = self.llm.logits(ids_copy)
+            logits = self.llm.logits(token_ids)
             masked = self.apply_mask(self.vocab.str_valid[escaped], logits)
             best_token = self.select_best_token(masked)
             self._record(masked)
             close_quote_idx = int(self.vocab.str_closed[escaped][best_token])
             if close_quote_idx >= 0:
-                output += self.vocab.ids_to_tokens[best_token][:close_quote_idx + 1]
-                ids_copy.append(best_token)
+                text_until_quote = self.vocab.ids_to_tokens[best_token][:close_quote_idx + 1]
+                output += text_until_quote
+                token_ids += self._add(Origin.MODEL, text_until_quote, ids_from_model=[best_token])
                 break
             output += self.vocab.ids_to_tokens[best_token]
+            token_ids += self._add(Origin.MODEL, self.vocab.ids_to_tokens[best_token], ids_from_model=[best_token])
             escaped = int(self.vocab.str_escaped[escaped][best_token])
-            ids_copy.append(best_token)
  
-        if output[-1] == "\\" or escaped:
-            output = output[:-1]
-            ids_copy.append(self.vocab.backslash_id)
+        if escaped:
+            output += "\\"
+            token_ids += self._add(Origin.MODEL, "\\")
         
-        output = output.rstrip(" ")
 
         # If output does not have the closing quote due to token_limit
         # Then add it manually to not break the JSON
         if output[-1] != '"':
             output += '"'
+            token_ids += self._add(Origin.SCAFFOLD, '"')
 
         return output
 
-    def generate_boolean(self, token_ids: list[int]) -> str:
+    def generate_boolean(self, token_ids: list[int]) -> list[int]:
         """
         Pour generer une numbre, on doit tout simplement recevoir les logits
         qui sont nummeres valides, s'il n'y a pas
         """
         logits = self.llm.logits(token_ids)
         masked = self.apply_mask(self.only(self.vocab.true_id, self.vocab.false_id), logits)
+        self._record(masked)
         best_token = self.select_best_token(masked)
         value = "true" if best_token == self.vocab.true_id else "false"
+        
+        token_ids += self._add(Origin.MODEL, value, ids_from_model=[best_token])
+
         return value
+
 
     def generate_number(self, token_ids: list[int], integer: bool = False) -> str:
         """
@@ -322,7 +325,6 @@ class ConstrainedDecoder(BaseModel):
           if the last character is not a dot.
         """
         output = ""
-        ids_copy = list(token_ids) # local copy for this function
         limit = self.token_limits.get("integer", 8) if integer \
             else self.token_limits.get("number", 12)
         for _ in range(limit):
@@ -344,13 +346,14 @@ class ConstrainedDecoder(BaseModel):
                 # may stop only once the number is complete
                 # ("", "-" and "12." are not valid numbers)
                 combined_mask |= self.vocab.end_number_mask
-            logits = self.llm.logits(ids_copy)
+            logits = self.llm.logits(token_ids)
             masked = self.apply_mask(combined_mask, logits)
+            self._record(masked)
             best_token = self.select_best_token(masked)
             if self.vocab.end_number_mask[best_token]:
                 break           # model says the number is finished
             output += self.vocab.ids_to_tokens[best_token]
-            ids_copy.append(best_token)
+            token_ids += self._add(Origin.MODEL, self.vocab.ids_to_tokens[best_token], ids_from_model=[best_token])
         # rstrip(".") removes "." characters from the END only.
         output = output.rstrip(".")  # in case we hit max tokens on ex: "12."
         return output
@@ -373,10 +376,9 @@ class ConstrainedDecoder(BaseModel):
         it stops requesting logits to the model when
         there is only one or no candidates.
         """
-        picked: list[int] = []
         candidates = list(self.fn_by_name)
         step = 0
-        while len(candidates) > 1:
+        while True:
             next_candidates: dict[int, list[str]] = {}
             for name in candidates:
                 name_ids = self.fn_name_ids[name]
@@ -390,17 +392,23 @@ class ConstrainedDecoder(BaseModel):
                 # real choice: the model picks, but only among these.
                 # ids + picked = the prompt followed by the name so far;
                 # *next_candidates passes each key of next_candidates as a separate argument
-                logits = self.llm.logits(previous_ids + picked)
+                logits = self.llm.logits(previous_ids)
                 masked = self.apply_mask(self.only(*next_candidates), logits)
-                chosen_token_id = masked.argmax()
-            
+                self._record(masked)
+                chosen_token_id = int(np.argmax(masked))
+
             candidates = next_candidates[chosen_token_id]
-            picked.append(chosen_token_id)
-            step += 1
             if chosen_token_id == self.vocab.quote_id:
                 break
+            previous_ids += self._add(
+                Origin.MODEL,
+                self.vocab.ids_to_tokens[chosen_token_id],
+                ids_from_model=[chosen_token_id]
+            )
+            step += 1
         if len(candidates) == 0:
             raise ValueError("No candidate function found for this prompt")
+        
         return candidates[0]
 
     def _change(self, origin: Origin, text: str, ids: list[int]) -> Change:

@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from src.core.utils import RESET, YELLOW
+from src.visual.constants import RESET, YELLOW
 from src.model.schema import FnDefinition, FunctionCall, value_matches
 
 
@@ -117,10 +117,13 @@ class CmmCache(BaseModel):
             return None
         entry = self.entries.get(self.cache_key(prompt, fn_list))
         if entry is None or entry.prompt != prompt:
-            return None                         # absent ou collision
+            return None
         selected = fn_by_name.get(entry.name)
         if selected is None:
-            return None                         # fonction supprimee
+            return None
+        missing_params = set(selected.parameters) - set(entry.parameters)
+        if missing_params:
+            return None
         for param_name, value in entry.parameters.items():
             spec = selected.parameters.get(param_name)
             if spec is None or not value_matches(value, spec.type):
@@ -140,7 +143,7 @@ class CmmCache(BaseModel):
         if not self.enabled:
             return
         self.entries[self.cache_key(prompt, fn_list)] = CacheEntry(
-            prompt=call.prompt, name=call.name, parameters=call.parameters,
+            prompt=prompt, name=call.name, parameters=call.parameters,
         )
         self._save()
 

@@ -2,7 +2,7 @@
 # rules below find uv right after ensure-uv installs it
 export PATH := $(HOME)/.local/bin:$(PATH)
 
-ARGS ?= --cache_results
+ARGS ?= 
 
 all: run
 

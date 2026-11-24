@@ -85,11 +85,19 @@ def build_decoder(
     vocab: FakeVocab | None = None,
 ) -> ConstrainedDecoder:
     """Construit un décodeur avec des dépendances factices."""
-    return ConstrainedDecoder.model_construct(
-        llm=llm if llm is not None else FakeLLM(),
-        vocab=vocab if vocab is not None else FakeVocab(),
+    llm = llm if llm is not None else FakeLLM()
+    vocab = vocab if vocab is not None else FakeVocab()
+    decoder = ConstrainedDecoder.model_construct(
+        llm=llm,
+        vocab=vocab,
         fn_by_name=fn_by_name if fn_by_name is not None else {},
     )
+    # Le vrai Vocab associe TOUJOURS un texte à chaque id (ids_to_tokens).
+    # Sans ça, le décodeur ne peut pas afficher le nom token par token.
+    for ids in decoder.fn_name_ids.values():
+        for token_id in ids:
+            vocab.ids_to_tokens.setdefault(token_id, llm.decode([token_id]))
+    return decoder
 
 
 def one_noop_function() -> dict[str, FnDefinition]:
@@ -183,6 +191,7 @@ def test_name_is_chosen_among_the_masked_candidates() -> None:
         "fn_add_numbers": [100, 101],
         "fn_greet": [150, 151],
     }
+    decoder.vocab.ids_to_tokens = {100: "a", 101: "b", 150: "g", 151: "h"}
     llm.logits_script = [{150: 9.0}]  # le modèle préfère fn_greet
 
     assert decoder.select_best_fn_name([7, 8]) == "fn_greet"
@@ -539,6 +548,7 @@ def test_shorter_name_wins_when_the_model_stops_it() -> None:
     llm = FakeLLM()
     decoder = build_decoder(functions, llm=llm)
     decoder.fn_name_ids = {"fn_a": [100], "fn_ab": [100, 101]}
+    decoder.vocab.ids_to_tokens = {100: "a", 101: "b", 30: '"'}
     # fn_a s'arrête avec une quote (quote_id == 30), fn_ab continue.
     llm.logits_script = [{30: 9.0}]
 
@@ -553,6 +563,148 @@ def test_longer_name_wins_when_the_model_continues() -> None:
     llm = FakeLLM()
     decoder = build_decoder(functions, llm=llm)
     decoder.fn_name_ids = {"fn_a": [100], "fn_ab": [100, 101]}
+    decoder.vocab.ids_to_tokens = {100: "a", 101: "b", 30: '"'}
     llm.logits_script = [{101: 9.0}]
 
     assert decoder.select_best_fn_name([]) == "fn_ab"
+
+
+# --------------------------------------------------------------------------
+# Visualisation : chaque token du modele doit etre emis separement.
+# --------------------------------------------------------------------------
+
+
+def test_model_tokens_are_emitted_one_part_per_token() -> None:
+    """Une valeur de 3 tokens = 3 Part MODEL, pas un seul a la fin."""
+    from src.core.events import Origin
+
+    vocab = FakeVocab()
+    vocab.ids_to_tokens = {20: "o", 21: "k", 22: '",'}
+    vocab.str_valid[0][[20, 21, 22]] = True
+    vocab.str_closed[0][22] = 0
+
+    llm = FakeLLM()
+    llm.logits_script = [{20: 9.0}, {21: 9.0}, {22: 9.0}]
+
+    decoder = build_decoder(one_noop_function(), llm=llm, vocab=vocab)
+
+    decoder.generate_string([])
+
+    texts = [p.text for p in decoder.parts if p.origin is Origin.MODEL]
+    assert texts == ["o", "k", '"'], texts
+
+
+def test_record_survives_an_id_without_a_readable_text() -> None:
+    """Le panneau top-5 ne doit pas planter sur un id absent de ids_to_tokens."""
+    vocab = FakeVocab()
+    vocab.ids_to_tokens = {}
+    decoder = build_decoder(one_noop_function(), vocab=vocab)
+    masked = np.full(N_LOGITS, -np.inf, dtype=np.float32)
+    masked[40] = 3.0
+
+    decoder._record(masked)
+
+    assert decoder.last_top[0][1] == 40
+
+
+# --------------------------------------------------------------------------
+# Construction du nom : _add token par token, contexte non dupliqué.
+# --------------------------------------------------------------------------
+
+
+def test_select_best_fn_name_builds_the_name_one_token_at_a_time() -> None:
+    """Chaque token du nom passe par _add : un Part MODEL par token.
+
+    ``fn_add`` et ``fn_axe`` partagent "fn_a" (4 tokens forcés) puis
+    divergent sur le 5e. Le modèle doit être interrogé UNE fois, avec le
+    contexte [7, 8] suivi de "fn_a" UNE seule fois (pas de doublon).
+    """
+    from src.core.events import Origin
+
+    llm = FakeLLM()
+    functions = {
+        "fn_add": FnDefinition(name="fn_add"),
+        "fn_axe": FnDefinition(name="fn_axe"),
+    }
+    decoder = build_decoder(functions, llm=llm)
+
+    seen: list[list[int]] = []
+    real_logits = llm.logits
+
+    def spy(ids: list[int]) -> np.ndarray:
+        seen.append(list(ids))
+        return real_logits(ids)
+
+    llm.logits = spy  # type: ignore[method-assign]
+    divergence = decoder.fn_name_ids["fn_add"][4]  # 'd' contre 'x'
+    llm.logits_script = [{divergence: 9.0}]
+
+    assert decoder.select_best_fn_name([7, 8]) == "fn_add"
+
+    prefix = decoder.fn_name_ids["fn_add"][:4]  # "fn_a"
+    assert seen == [[7, 8, *prefix]], seen
+    assert [(p.origin, p.text) for p in decoder.parts] == [
+        (Origin.MODEL, char) for char in "fn_add"
+    ]
+    assert decoder.data_str == "fn_add"
+
+
+def test_select_best_fn_name_finishes_a_single_candidate_without_the_model() -> None:
+    """Un seul candidat : on écrit quand même le nom, token par token."""
+    llm = FakeLLM()
+    decoder = build_decoder(one_noop_function(), llm=llm)
+
+    assert decoder.select_best_fn_name([]) == "fn_ping"
+
+    assert llm.calls == 0
+    assert decoder.data_str == "fn_ping"
+    assert [p.text for p in decoder.parts] == list("fn_ping")
+
+
+# --------------------------------------------------------------------------
+# Un prompt = un buffer. Fin du JSON : exactement 2 accolades.
+# --------------------------------------------------------------------------
+
+
+def test_decoder_state_is_reset_between_prompts() -> None:
+    """data_str et parts ne doivent pas s'accumuler d'un prompt à l'autre."""
+    decoder = build_decoder(one_noop_function())
+
+    first = decoder.generate_json("one")
+    second = decoder.generate_json("two")
+
+    assert first != second
+    assert decoder.data_str == second
+    assert "}}{" not in decoder.data_str
+    assert decoder.data_str.count("}") == 2
+    assert [p.text for p in decoder.parts[:2]] == ['{"prompt": ', '"two"']
+
+
+def test_generate_json_returns_the_text_it_built() -> None:
+    """data_str fait foi : on ne redécode pas des ids qui contiennent plus.
+
+    Le token ferme la chaîne mais contient aussi une virgule (``lo",``).
+    Le texte gardé est ``lo"`` : redécoder l'id ferait revenir la virgule.
+    """
+    vocab = FakeVocab()
+    vocab.ids_to_tokens = {90: 'lo",'}
+    vocab.str_valid[0][90] = True
+    vocab.str_closed[0][90] = 2  # la quote est à l'index 2
+
+    llm = FakeLLM()
+    llm.logits_script = [{90: 9.0}]
+    # L'id 90 décode le token ENTIER, même si on n'en garde que 'lo"'.
+    llm._to_id['lo",'] = 90
+    llm._to_char[90] = 'lo",'
+
+    functions = {
+        "fn_greet": FnDefinition(
+            name="fn_greet", parameters={"name": ParamSpec(type="string")}
+        )
+    }
+    decoder = build_decoder(functions, llm=llm, vocab=vocab)
+
+    raw = decoder.generate_json("p")
+
+    assert raw == decoder.data_str
+    assert json.loads(raw)["parameters"] == {"name": "lo"}

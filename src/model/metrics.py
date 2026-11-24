@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_serializer
 
 
 class PromptMetrics(BaseModel):
@@ -20,6 +20,10 @@ class PromptMetrics(BaseModel):
     cache: Literal["hit", "miss", "off"] = "off"
     error: str | None = None
 
+    @field_serializer("duration_s")
+    def round_floats(self, v: float) -> float:
+        return round(v, 5)
+
 
 class CmmMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -31,6 +35,10 @@ class CmmMetrics(BaseModel):
     total_s: float = Field(ge=0.0, default=0.0)
     prompts: list[PromptMetrics] = Field(default_factory=list)
 
+    @field_serializer("started_at", "finished_at", "model_load_s", "total_s")
+    def round_floats(self, v: float) -> float:
+        return round(v, 2)
+    
     @computed_field                       # ← inclus dans model_dump()
     @property
     def total_calls(self) -> int:
@@ -85,10 +93,4 @@ class CmmMetrics(BaseModel):
                   file=sys.stderr)
             tmp.unlink(missing_ok=True)
 
-    def summary(self) -> str:
-        """Une ligne de bilan pour la fin du run."""
-        done = len(self.prompts)
-        return (f"{self.successes}/{done} ok, {self.errors} erreurs, "
-                f"{self.total_calls} appels ({self.cache_hits} cache), "
-                f"{self.total_s:.1f}s")
     

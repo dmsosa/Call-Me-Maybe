@@ -265,6 +265,7 @@ class CachedGenerator(Generator):
 
     def model_post_init(self, context: Any) -> None:
         self._store_fn_names()
+        self.prompt_count = len(self.prompts)
         self.cache = CmmCache(
             path=Path(self.cache_path), enabled=self.cache_enabled
         )
@@ -389,3 +390,196 @@ def test_exactly_one_prompt_end_per_prompt_including_hits(tmp_path: Path) -> Non
     second.run()
 
     assert [c.event_type for c in seen].count("prompt_end") == 1
+
+
+def test_store_records_the_prompt_of_the_key(tmp_path: Path) -> None:
+    """L'entree doit memoriser le prompt de la CLE, pas celui du FunctionCall.
+
+    Sinon ``lookup`` compare deux prompts differents et rate sa propre
+    entree : le cache ne touche jamais.
+    """
+    cache = cache_at(tmp_path)
+    other = FunctionCall(
+        prompt="un autre prompt",
+        name="fn_add",
+        parameters={"a": 1.0, "b": 2.0},
+    )
+
+    cache.store("2+3", FNS, other)
+
+    entry = cache.entries[cache.cache_key("2+3", FNS)]
+    assert entry.prompt == "2+3"
+
+
+def test_mismatched_call_prompt_still_hits_after_a_reload(tmp_path: Path) -> None:
+    """Le defaut precedent doit aussi etre corrige sur le disque."""
+    cache = cache_at(tmp_path)
+    other = FunctionCall(
+        prompt="un autre prompt",
+        name="fn_add",
+        parameters={"a": 1.0, "b": 2.0},
+    )
+    cache.store("2+3", FNS, other)
+
+    reloaded = cache_at(tmp_path)
+
+    assert reloaded.lookup("2+3", FNS, BY_NAME) is not None
+
+
+def test_lookup_rejects_an_entry_missing_one_parameter(tmp_path: Path) -> None:
+    """Avec un seul parametre sur deux, l'appel est incomplet."""
+    cache = cache_at(tmp_path)
+    cache.store(
+        "2+3", FNS,
+        FunctionCall(prompt="2+3", name="fn_add", parameters={"a": 2.0}),
+    )
+
+    assert cache.lookup("2+3", FNS, BY_NAME) is None
+
+
+def test_lookup_accepts_a_function_without_parameters(tmp_path: Path) -> None:
+    """La verification des parametres ne doit pas rejeter zero parametre."""
+    noop = FnDefinition(name="fn_ping", parameters={})
+    cache = cache_at(tmp_path)
+    cache.store(
+        "ping", [noop],
+        FunctionCall(prompt="ping", name="fn_ping", parameters={}),
+    )
+
+    assert cache.lookup("ping", [noop], {"fn_ping": noop}) is not None
+
+
+def test_prompt_start_on_a_miss_announces_the_miss(tmp_path: Path) -> None:
+    """Meme defaut que le hit, vu de l'autre cote : l'evenement dit 'off'."""
+    generator = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    seen: list[Any] = []
+    generator.on_change = seen.append
+
+    generator.run()
+
+    assert seen[0].event_type == "prompt_start"
+    assert seen[0].cache == "miss"
+
+
+def test_prompt_start_on_a_hit_carries_prompt_and_index(tmp_path: Path) -> None:
+    """Le header de la vue a besoin du prompt, de l'index et du total."""
+    first = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    first.run()
+
+    second = build_cached(ScriptedDecoder({}), ["2+3"], tmp_path)
+    seen: list[Any] = []
+    second.on_change = seen.append
+    second.run()
+
+    start = seen[0]
+    assert (start.prompt, start.prompt_index, start.total_prompts) == (
+        "2+3", 1, 1,
+    )
+
+
+def test_a_hit_does_not_rewrite_the_cache(tmp_path: Path) -> None:
+    """Un hit ne doit ni reecrire ni dupliquer l'entree."""
+    first = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    first.run()
+    before = (tmp_path / "answers.json").read_text(encoding="utf-8")
+
+    second = build_cached(ScriptedDecoder({}), ["2+3"], tmp_path)
+    second.run()
+
+    after = (tmp_path / "answers.json").read_text(encoding="utf-8")
+    assert after == before
+    assert len(cache_at(tmp_path).entries) == 1
+
+
+def test_prompt_start_reports_each_prompts_own_cache_state(
+        tmp_path: Path) -> None:
+    """Le 2e prompt ne doit pas annoncer l'etat du 1er.
+
+    Cache : "2+3" est stocke, "4+5" ne l'est pas. Les deux prompt_start
+    doivent dire "hit" puis "miss" (et non "off" puis "hit").
+    """
+    first = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    first.run()
+
+    other_json = (
+        '{"prompt": "4+5", "name": "fn_add", '
+        '"parameters": {"a": 4, "b": 5}}'
+    )
+    second = build_cached(
+        ScriptedDecoder({"4+5": other_json}), ["2+3", "4+5"], tmp_path
+    )
+    seen: list[Any] = []
+    second.on_change = seen.append
+
+    second.run()
+
+    starts = [c for c in seen if c.event_type == "prompt_start"]
+    assert [c.cache for c in starts] == ["hit", "miss"]
+    assert [c.prompt for c in starts] == ["2+3", "4+5"]
+    assert [c.prompt_index for c in starts] == [1, 2]
+
+
+def test_prompt_start_is_off_when_the_cache_is_disabled(
+        tmp_path: Path) -> None:
+    """Cache desactive : l'etat annonce est 'off', pas 'miss'."""
+    generator = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    generator.cache_enabled = False
+    generator.cache = CmmCache(
+        path=tmp_path / "answers.json", enabled=False
+    )
+    seen: list[Any] = []
+    generator.on_change = seen.append
+
+    generator.run()
+
+    assert seen[0].event_type == "prompt_start"
+    assert seen[0].cache == "off"
+    assert not (tmp_path / "answers.json").exists()
+
+
+def test_a_hit_shows_the_cached_call_right_after_prompt_start(
+        tmp_path: Path) -> None:
+    """Un hit n'a pas de tokens : une seule ligne [CACHED] suffit a la vue."""
+    first = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    first.run()
+
+    second = build_cached(ScriptedDecoder({}), ["2+3"], tmp_path)
+    seen: list[Any] = []
+    second.on_change = seen.append
+    second.run()
+
+    assert [c.event_type for c in seen[:2]] == ["prompt_start", "append"]
+    assert seen[1].cache == "hit"
+    assert "fn_add" in seen[1].text
+    assert seen[1].text.endswith("[CACHED]")
+
+
+def test_cached_run_returns_exactly_the_same_function_call(
+        tmp_path: Path) -> None:
+    """Aucune difference de resultat entre generation et hit de cache."""
+    first = build_cached(
+        ScriptedDecoder({"2+3": SUM_JSON}), ["2+3"], tmp_path
+    )
+    first.run()
+
+    second = build_cached(ScriptedDecoder({}), ["2+3"], tmp_path)
+    second.run()
+
+    assert second.results == first.results
+    fresh = first.metrics.prompts[0]
+    cached = second.metrics.prompts[0]
+    assert (cached.prompt, cached.name, cached.parameters) == (
+        fresh.prompt, fresh.name, fresh.parameters,
+    )

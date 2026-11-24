@@ -85,20 +85,21 @@ class Generator(BaseModel):
                     fn_list=self.fn_list,
                     fn_by_name=self.fn_by_name
                 )
+                self.run_cache_state = "hit" if cached_result \
+                                    is not None else "miss"
+            self._emit("prompt_start")
             if cached_result is not None:
                 result = cached_result
-                self.run_cache_state = "hit"
-                self._emit("prompt_start")
                 self._forward(Change(
                     event_type="append",
                     step=i + 1,
                     spt=0,
                     origin=Origin.SCAFFOLD,
+                    cache="hit",
                     text=f"{json.dumps(result.model_dump())} [CACHED]",
                 ))
             else:
                 try:
-                    self._emit("prompt_start")
                     result = self.generate_function_call(prompt.prompt)
                     self.run_cache_state = "miss"
                     if self.cache is not None and self.cache.enabled:
